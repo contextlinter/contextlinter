@@ -4,6 +4,14 @@
   "description": "A linter for AI coding context — analyzes sessions and suggests improvements to rules files",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contextlinter/contextlinter.git"
+  },
+  "homepage": "https://github.com/contextlinter/contextlinter#readme",
+  "bugs": {
+    "url": "https://github.com/contextlinter/contextlinter/issues"
+  },
   "bin": {
     "contextlinter": "./dist/index.js"
   },

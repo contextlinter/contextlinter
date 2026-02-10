@@ -1,0 +1,40 @@
+{
+  "name": "contextlinter",
+  "version": "0.1.0",
+  "description": "A linter for AI coding context — analyzes sessions and suggests improvements to rules files",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "contextlinter": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "prompts"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "prepublishOnly": "pnpm build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "check": "pnpm lint && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "chalk": "^5.4.0",
+    "uuid": "^13.0.0"
+  },
+  "packageManager": "pnpm@10.22.0"
+}

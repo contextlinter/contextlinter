@@ -1,4 +1,4 @@
-![ContextLinter](./assets/logo.png)
+![ContextLinter](./assets/logo.svg)
 
 ![CI](https://github.com/contextlinter/contextlinter/actions/workflows/ci.yml/badge.svg)
 ![npm](https://img.shields.io/npm/v/contextlinter)

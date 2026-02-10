@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1] - 2026-02-10
+
+Based on the commits (ba598d9 and fb48202), this release only contains logo/asset updates and a gitattributes addition. Here's the entry:
+
+```markdown
+## [0.1.1] - 2026-02-10
+
+### Changed
+- Updated project logo
+- Added .gitattributes for binary file handling
+```
+
 ## [0.1.0] - 2026-02-10
 
 ### Added

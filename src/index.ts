@@ -339,6 +339,14 @@ async function runRules(opts: RulesOptions): Promise<void> {
   // Cache it
   await cacheRulesSnapshot(storeDir, snapshot);
 
+  // Warn about large files
+  for (const file of snapshot.files) {
+    const lineCount = file.content.split('\n').length;
+    if (lineCount > 500) {
+      printWarning(`${file.relativePath} is large (${lineCount} lines) — consider splitting it`);
+    }
+  }
+
   // Print output
   printRulesOverview(snapshot);
 

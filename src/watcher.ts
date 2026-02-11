@@ -8,7 +8,6 @@ import {
   discoverSessionsInDir,
 } from './session-reader/discovery.js';
 import { buildSessionInfo } from './session-reader/parser.js';
-import { findProjectRoot } from './utils/paths.js';
 import { initStoreDir } from './store/persistence.js';
 import { cacheSession, getCachedSession } from './store/session-cache.js';
 import {
@@ -64,13 +63,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
   }
 
   // Determine project root
-  const startDir = opts.project ? resolve(opts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
-
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
-  }
+  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
   // Find the matching Claude project directory
   const projects = await discoverProjects();
@@ -343,7 +336,7 @@ export async function processCandidate(
     }
   }
 
-  console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review.`));
+  console.log(lastSub(`Run ${color.bold('clinter apply')} to review.`));
   console.log();
 }
 
@@ -481,7 +474,7 @@ export function isContextlinterSession(session: SessionInfo): boolean {
   for (const msg of firstMessages) {
     if (msg.role === 'user') {
       const text = msg.textContent.toLowerCase();
-      if (text.includes('contextlinter') && (
+      if ((text.includes('contextlinter') || text.includes('clinter')) && (
         text.includes('analyze') ||
         text.includes('suggest') ||
         text.includes('apply') ||
@@ -496,7 +489,7 @@ export function isContextlinterSession(session: SessionInfo): boolean {
       for (const tool of msg.toolUses) {
         if (tool.name === 'Bash') {
           const input = tool.input as Record<string, unknown> | null;
-          if (input && typeof input.command === 'string' && input.command.includes('contextlinter')) {
+          if (input && typeof input.command === 'string' && (input.command.includes('contextlinter') || input.command.includes('clinter'))) {
             return true;
           }
         }
@@ -520,7 +513,7 @@ export function printExitSummary(stats: WatchStats): void {
 
   if (stats.suggestionsGenerated > 0) {
     console.log(substep(`Suggestions generated: ${stats.suggestionsGenerated}`));
-    console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review pending suggestions.`));
+    console.log(lastSub(`Run ${color.bold('clinter apply')} to review pending suggestions.`));
   } else {
     console.log(lastSub(`Suggestions generated: ${stats.suggestionsGenerated}`));
   }

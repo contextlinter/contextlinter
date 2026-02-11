@@ -1,6 +1,5 @@
 import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import chalk from 'chalk';
 import type { ProjectInfo, SessionFileInfo, SessionInfo } from './session-reader/types.js';
 import type { AnalysisResult } from './analyzer/types.js';
 import type { ModelName } from './analyzer/llm-client.js';
@@ -9,7 +8,6 @@ import {
   discoverSessionsInDir,
 } from './session-reader/discovery.js';
 import { buildSessionInfo } from './session-reader/parser.js';
-import { findProjectRoot } from './utils/paths.js';
 import { initStoreDir } from './store/persistence.js';
 import { cacheSession, getCachedSession } from './store/session-cache.js';
 import {
@@ -27,6 +25,9 @@ import { generateSuggestions, computeSuggestionCacheKey } from './suggester/gene
 import { dedupAndRank } from './suggester/dedup.js';
 import { saveSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
 import { printError, printVerbose, printWarning } from './utils/logger.js';
+import { color } from './ui/theme.js';
+import { step, substep, lastSub, success, shortPath } from './ui/format.js';
+import { buildBanner } from './ui/banner.js';
 
 export interface WatchOptions {
   project?: string;
@@ -62,13 +63,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
   }
 
   // Determine project root
-  const startDir = opts.project ? resolve(opts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
-
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
-  }
+  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
   // Find the matching Claude project directory
   const projects = await discoverProjects();
@@ -106,8 +101,11 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
   };
 
   // Print startup banner
-  console.log(chalk.green('==> ') + chalk.bold(`ContextLinter watching ${projectRoot}`));
-  console.log(`    ${seen.size} existing sessions, waiting for new activity...`);
+  const banner = buildBanner('Watch', projectRoot, {
+    Sessions: `${seen.size} existing`,
+    Model: opts.model ?? 'sonnet',
+  });
+  for (const line of banner) console.log(line);
   console.log();
 
   if (opts.verbose) {
@@ -294,8 +292,8 @@ export async function processCandidate(
 
   // Analyze
   const shortId = session.sessionId.slice(0, 8);
-  console.log(chalk.green('==> ') + `New session detected: ${shortId} (${sessionInfo.messageCount} messages)`);
-  console.log('    Analyzing...');
+  console.log(step(`Session ${shortId} (${sessionInfo.messageCount} messages)`));
+  console.log(substep('Analyzing...'));
 
   let result: AnalysisResult;
   try {
@@ -321,7 +319,7 @@ export async function processCandidate(
   stats.sessionsAnalyzed++;
   stats.insightsFound += result.insights.length;
 
-  console.log(chalk.green(`    \u2713 ${result.insights.length} insight${result.insights.length === 1 ? '' : 's'} found`));
+  console.log(success(`${result.insights.length} insight${result.insights.length === 1 ? '' : 's'} found`, false));
 
   // Optionally generate suggestions scoped to this session's insights
   if (opts.suggest && result.insights.length > 0) {
@@ -334,12 +332,11 @@ export async function processCandidate(
     stats.suggestionsGenerated += suggestionsGenerated;
 
     if (suggestionsGenerated > 0) {
-      console.log(chalk.green(`    \u2713 ${suggestionsGenerated} suggestion${suggestionsGenerated === 1 ? '' : 's'} generated`));
+      console.log(success(`${suggestionsGenerated} suggestion${suggestionsGenerated === 1 ? '' : 's'} generated`));
     }
   }
 
-  console.log();
-  console.log(`    Run ${chalk.bold('contextlinter apply')} to review.`);
+  console.log(lastSub(`Run ${color.bold('clinter apply')} to review.`));
   console.log();
 }
 
@@ -477,7 +474,7 @@ export function isContextlinterSession(session: SessionInfo): boolean {
   for (const msg of firstMessages) {
     if (msg.role === 'user') {
       const text = msg.textContent.toLowerCase();
-      if (text.includes('contextlinter') && (
+      if ((text.includes('contextlinter') || text.includes('clinter')) && (
         text.includes('analyze') ||
         text.includes('suggest') ||
         text.includes('apply') ||
@@ -492,7 +489,7 @@ export function isContextlinterSession(session: SessionInfo): boolean {
       for (const tool of msg.toolUses) {
         if (tool.name === 'Bash') {
           const input = tool.input as Record<string, unknown> | null;
-          if (input && typeof input.command === 'string' && input.command.includes('contextlinter')) {
+          if (input && typeof input.command === 'string' && (input.command.includes('contextlinter') || input.command.includes('clinter'))) {
             return true;
           }
         }
@@ -509,14 +506,16 @@ export function printExitSummary(stats: WatchStats): void {
   const durationStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 
   console.log();
-  console.log(chalk.green('==> ') + chalk.bold('Watch summary'));
-  console.log(`    Duration: ${durationStr}`);
-  console.log(`    Sessions analyzed: ${stats.sessionsAnalyzed}`);
-  console.log(`    Insights found: ${stats.insightsFound}`);
-  console.log(`    Suggestions generated: ${stats.suggestionsGenerated}`);
+  console.log(step('Watch Summary'));
+  console.log(substep(`Duration: ${durationStr}`));
+  console.log(substep(`Sessions analyzed: ${stats.sessionsAnalyzed}`));
+  console.log(substep(`Insights found: ${stats.insightsFound}`));
 
   if (stats.suggestionsGenerated > 0) {
-    console.log(`    Run ${chalk.bold('contextlinter apply')} to review pending suggestions.`);
+    console.log(substep(`Suggestions generated: ${stats.suggestionsGenerated}`));
+    console.log(lastSub(`Run ${color.bold('clinter apply')} to review pending suggestions.`));
+  } else {
+    console.log(lastSub(`Suggestions generated: ${stats.suggestionsGenerated}`));
   }
 }
 

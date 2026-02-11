@@ -69,6 +69,7 @@ import { generateSuggestions, computeSuggestionCacheKey } from './suggester/gene
 import { dedupAndRank } from './suggester/dedup.js';
 import { saveSuggestionSet, loadLatestSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
 import { runInteractiveReview } from './applier/interactive.js';
+import { runWatch, type WatchOptions } from './watcher.js';
 
 interface RulesOptions {
   project: string | undefined;
@@ -77,12 +78,13 @@ interface RulesOptions {
 }
 
 interface ParsedCLI {
-  command: 'run' | 'list' | 'analyze' | 'session-detail' | 'rules' | 'suggest' | 'apply' | 'init';
+  command: 'run' | 'list' | 'analyze' | 'session-detail' | 'rules' | 'suggest' | 'apply' | 'init' | 'watch';
   options: CLIOptions;
   analyzeOptions: AnalyzeOptions;
   rulesOptions: RulesOptions;
   suggestOptions: SuggestOptions;
   applyOptions: ApplyOptions;
+  watchOptions: WatchOptions;
 }
 
 function printHelp(): void {
@@ -94,6 +96,7 @@ ${chalk.bold('Commands:')}
   analyze    Analyze Claude Code sessions for insights
   suggest    Generate rule suggestions from insights
   apply      Review and apply suggestions interactively
+  watch      Monitor for new sessions and auto-analyze
   rules      Show current rules overview
   init       Create slash command file
 
@@ -107,6 +110,11 @@ ${chalk.bold('Options:')}
   --dry-run          Preview without applying
   --verbose          Show detailed output
   --help             Show this help
+
+${chalk.bold('Watch options:')}
+  --interval N       Poll interval in seconds (default: 300)
+  --cooldown N       Wait before analyzing new session (default: 60)
+  --no-suggest       Only analyze, don't generate suggestions
 
 ${chalk.bold('Apply options:')}
   --min-confidence N Only apply above confidence threshold
@@ -131,6 +139,9 @@ function parseCLIArgs(): ParsedCLI {
       'min-confidence': { type: 'string' },
       'min-messages': { type: 'string' },
       model: { type: 'string' },
+      interval: { type: 'string' },
+      cooldown: { type: 'string' },
+      'no-suggest': { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
     strict: false,
@@ -148,6 +159,7 @@ function parseCLIArgs(): ParsedCLI {
     : cmd === 'rules' ? 'rules'
     : cmd === 'suggest' ? 'suggest'
     : cmd === 'apply' ? 'apply'
+    : cmd === 'watch' ? 'watch'
     : cmd === 'init' ? 'init'
     : values.session ? 'session-detail'
     : 'list';
@@ -200,6 +212,14 @@ function parseCLIArgs(): ParsedCLI {
       full: Boolean(values.full),
       model: values.model as string | undefined,
     },
+    watchOptions: {
+      project: values.project as string | undefined,
+      interval: values.interval ? parseInt(values.interval as string, 10) : 300,
+      cooldown: values.cooldown ? parseInt(values.cooldown as string, 10) : 60,
+      model: values.model as string | undefined,
+      suggest: !Boolean(values['no-suggest']),
+      verbose: Boolean(values.verbose),
+    },
   };
 }
 
@@ -229,6 +249,11 @@ async function main(): Promise<void> {
 
   if (cli.command === 'init') {
     await runInit(cli.applyOptions);
+    return;
+  }
+
+  if (cli.command === 'watch') {
+    await runWatch(cli.watchOptions);
     return;
   }
 

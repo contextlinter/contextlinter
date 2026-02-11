@@ -874,7 +874,7 @@ describe('printExitSummary', () => {
     expect(output).toContain('Sessions analyzed: 4');
     expect(output).toContain('Insights found: 12');
     expect(output).toContain('Suggestions generated: 7');
-    expect(output).toContain('clinter apply');
+    expect(output).toContain('contextlinter apply');
   });
 
   it('omits apply message when no suggestions generated', () => {
@@ -896,6 +896,6 @@ describe('printExitSummary', () => {
     const output = logs.join('\n');
     expect(output).toContain('5m');
     expect(output).toContain('Suggestions generated: 0');
-    expect(output).not.toContain('clinter apply');
+    expect(output).not.toContain('contextlinter apply');
   });
 });

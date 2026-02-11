@@ -336,7 +336,7 @@ export async function processCandidate(
     }
   }
 
-  console.log(lastSub(`Run ${color.bold('clinter apply')} to review.`));
+  console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review.`));
   console.log();
 }
 
@@ -513,7 +513,7 @@ export function printExitSummary(stats: WatchStats): void {
 
   if (stats.suggestionsGenerated > 0) {
     console.log(substep(`Suggestions generated: ${stats.suggestionsGenerated}`));
-    console.log(lastSub(`Run ${color.bold('clinter apply')} to review pending suggestions.`));
+    console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review pending suggestions.`));
   } else {
     console.log(lastSub(`Suggestions generated: ${stats.suggestionsGenerated}`));
   }

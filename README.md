@@ -18,10 +18,12 @@ ContextLinter reads your Claude Code session history, finds patterns in how you 
 
 ```bash
 cd your-project
-npx clinter run
+npx contextlinter run
 ```
 
 No config files, no API keys. It uses your existing Claude Code CLI to call the LLM.
+
+> **Short alias:** `clinter` works as a shorthand everywhere — `npx clinter run` is equivalent to `npx contextlinter run`.
 
 ## What it actually does
 
@@ -89,7 +91,7 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 | `suggest` | Generate rule suggestions from insights |
 | `apply` | Review and apply suggestions interactively |
 | `rules` | Show current rules files and statistics |
-| `init` | Create a `/clinter` slash command for Claude Code |
+| `init` | Create a `/contextlinter` slash command for Claude Code |
 
 ## Options
 

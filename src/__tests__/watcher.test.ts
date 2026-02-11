@@ -869,7 +869,7 @@ describe('printExitSummary', () => {
     console.log = originalLog;
 
     const output = logs.join('\n');
-    expect(output).toContain('Watch summary');
+    expect(output).toContain('Watch Summary');
     expect(output).toContain('2h 15m');
     expect(output).toContain('Sessions analyzed: 4');
     expect(output).toContain('Insights found: 12');

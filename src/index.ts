@@ -1,69 +1,27 @@
 #!/usr/bin/env node
-import chalk from "chalk";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { parseArgs } from "node:util";
-import { synthesizeCrossSessions } from "./analyzer/cross-session.js";
-import {
-  checkCliAvailable,
-  getPromptVersion,
-  type ModelName,
-} from "./analyzer/llm-client.js";
-import { isSessionAnalyzable } from "./analyzer/preparer.js";
-import { analyzeSingleSession } from "./analyzer/single-session.js";
-import type { AnalysisResult, AnalyzeOptions } from "./analyzer/types.js";
-import { runInteractiveReview } from "./applier/interactive.js";
-import type { ApplyOptions } from "./applier/types.js";
-import { discoverRulesFiles } from "./rules-reader/discovery.js";
-import { buildRulesSnapshot } from "./rules-reader/snapshot.js";
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+import { parseArgs } from 'node:util';
+import type { CLIOptions, ProjectInfo, SessionInfo } from './session-reader/types.js';
+import type { AnalyzeOptions, AnalysisResult } from './analyzer/types.js';
+import type { SuggestOptions } from './suggester/types.js';
+import type { ApplyOptions } from './applier/types.js';
 import {
   discoverProjects,
   filterByDays,
   filterByProject,
   findSessionById,
   limitSessions,
-} from "./session-reader/discovery.js";
-import { buildSessionInfo } from "./session-reader/parser.js";
-import type {
-  CLIOptions,
-  ProjectInfo,
-  SessionInfo,
-} from "./session-reader/types.js";
-import {
-  saveAnalysisResult,
-  saveCrossSessionPatterns,
-} from "./store/analysis-store.js";
-import {
-  loadAuditLog,
-  markCrossSessionDone,
-  markSessionAnalyzed,
-  markSessionParsed,
-  needsAnalysis,
-  saveAuditLog,
-} from "./store/audit.js";
-import { initStoreDir } from "./store/persistence.js";
-import {
-  cacheRulesSnapshot,
-  getCachedRulesSnapshot,
-} from "./store/rules-cache.js";
-import { cacheSession, getCachedSession } from "./store/session-cache.js";
-import {
-  findSuggestionSetByCacheKey,
-  loadLatestSuggestionSet,
-  saveSuggestionSet,
-} from "./store/suggestion-store.js";
-import { dedupAndRank } from "./suggester/dedup.js";
-import {
-  computeSuggestionCacheKey,
-  generateSuggestions,
-} from "./suggester/generator.js";
-import { loadSuggestionInputs } from "./suggester/loader.js";
-import type { SuggestOptions } from "./suggester/types.js";
+} from './session-reader/discovery.js';
+import { buildSessionInfo } from './session-reader/parser.js';
+import { buildRulesSnapshot } from './rules-reader/snapshot.js';
+import { discoverRulesFiles } from './rules-reader/discovery.js';
+import { findProjectRoot, isWindowsPlatform } from './utils/paths.js';
 import {
   printAnalysisDone,
-  printAnalysisProgress,
   printAnalysisSummaryLine,
+  printAnalysisProgress,
   printAnalyzerHeader,
   printDryRun,
   printError,
@@ -72,25 +30,47 @@ import {
   printNothingToAnalyze,
   printProjectHeader,
   printRulesDetailed,
-  printRulesFileLargeWarning,
   printRulesHeader,
   printRulesOverview,
   printSessionDetail,
-  printSessionSkipped,
   printSessionsDebugList,
-  printSessionsTable,
   printSkippedSummary,
+  printSessionsTable,
   printSuggesterHeader,
-  printSuggestionGenerated,
   printSuggestionGenerating,
+  printSuggestionGenerated,
   printSuggestionLoadingSummary,
   printSuggestionResults,
   printSummary,
   printVerbose,
   printWarning,
-} from "./utils/logger.js";
-import { isWindowsPlatform } from "./utils/paths.js";
-import { runWatch, type WatchOptions } from "./watcher.js";
+} from './utils/logger.js';
+import { initStoreDir } from './store/persistence.js';
+import { cacheSession, getCachedSession } from './store/session-cache.js';
+import { cacheRulesSnapshot, getCachedRulesSnapshot } from './store/rules-cache.js';
+import {
+  loadAuditLog,
+  markCrossSessionDone,
+  markSessionAnalyzed,
+  markSessionParsed,
+  needsAnalysis,
+  saveAuditLog,
+} from './store/audit.js';
+import { saveAnalysisResult, saveCrossSessionPatterns } from './store/analysis-store.js';
+import { checkCliAvailable, getPromptVersion, type ModelName } from './analyzer/llm-client.js';
+import { analyzeSingleSession } from './analyzer/single-session.js';
+import { synthesizeCrossSessions } from './analyzer/cross-session.js';
+import { isSessionAnalyzable } from './analyzer/preparer.js';
+import { loadSuggestionInputs } from './suggester/loader.js';
+import { generateSuggestions, computeSuggestionCacheKey } from './suggester/generator.js';
+import { dedupAndRank } from './suggester/dedup.js';
+import { saveSuggestionSet, loadLatestSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
+import { runInteractiveReview } from './applier/interactive.js';
+import { runWatch, type WatchOptions } from './watcher.js';
+import { brand, color } from './ui/theme.js';
+import { step, substep, success, secondary, tertiary, treeCont, lastSub, shortPath } from './ui/format.js';
+import { buildBanner } from './ui/banner.js';
+
 
 interface RulesOptions {
   project: string | undefined;
@@ -99,16 +79,7 @@ interface RulesOptions {
 }
 
 interface ParsedCLI {
-  command:
-    | "run"
-    | "list"
-    | "analyze"
-    | "session-detail"
-    | "rules"
-    | "suggest"
-    | "apply"
-    | "init"
-    | "watch";
+  command: 'run' | 'list' | 'analyze' | 'session-detail' | 'rules' | 'suggest' | 'apply' | 'init' | 'watch';
   options: CLIOptions;
   analyzeOptions: AnalyzeOptions;
   rulesOptions: RulesOptions;
@@ -118,11 +89,10 @@ interface ParsedCLI {
 }
 
 function printHelp(): void {
-  console.log(
-    `
-${chalk.bold("clinter")} <command> [options]
+  console.log(`
+${brand.emerald('contextlinter')} <command> [options]
 
-${chalk.bold("Commands:")}
+${color.bold('Commands:')}
   run        Full pipeline: analyze → suggest → apply
   analyze    Analyze Claude Code sessions for insights
   suggest    Generate rule suggestions from insights
@@ -131,7 +101,7 @@ ${chalk.bold("Commands:")}
   rules      Show current rules overview
   init       Create slash command file
 
-${chalk.bold("Options:")}
+${color.bold('Options:')}
   --limit N          Analyze only N newest sessions
   --min-messages N   Minimum user messages to analyze (default: 2)
   --model <model>    LLM model: sonnet (default), opus, haiku
@@ -142,39 +112,38 @@ ${chalk.bold("Options:")}
   --verbose          Show detailed output
   --help             Show this help
 
-${chalk.bold("Watch options:")}
+${color.bold('Watch options:')}
   --interval N       Poll interval in seconds (default: 300)
   --cooldown N       Wait before analyzing new session (default: 60)
   --no-suggest       Only analyze, don't generate suggestions
 
-${chalk.bold("Apply options:")}
+${color.bold('Apply options:')}
   --min-confidence N Only apply above confidence threshold
-`.trimEnd(),
-  );
+`.trimEnd());
 }
 
 function parseCLIArgs(): ParsedCLI {
   const { values, positionals } = parseArgs({
     options: {
-      project: { type: "string" },
-      all: { type: "boolean", default: false },
-      session: { type: "string" },
-      verbose: { type: "boolean", default: false },
-      limit: { type: "string" },
-      days: { type: "string" },
-      force: { type: "boolean", default: false },
-      "no-cross": { type: "boolean", default: false },
-      "dry-run": { type: "boolean", default: false },
-      list: { type: "boolean", default: false },
-      full: { type: "boolean", default: false },
-      yes: { type: "boolean", default: false },
-      "min-confidence": { type: "string" },
-      "min-messages": { type: "string" },
-      model: { type: "string" },
-      interval: { type: "string" },
-      cooldown: { type: "string" },
-      "no-suggest": { type: "boolean", default: false },
-      help: { type: "boolean", default: false },
+      project: { type: 'string' },
+      all: { type: 'boolean', default: false },
+      session: { type: 'string' },
+      verbose: { type: 'boolean', default: false },
+      limit: { type: 'string' },
+      days: { type: 'string' },
+      force: { type: 'boolean', default: false },
+      'no-cross': { type: 'boolean', default: false },
+      'dry-run': { type: 'boolean', default: false },
+      list: { type: 'boolean', default: false },
+      full: { type: 'boolean', default: false },
+      yes: { type: 'boolean', default: false },
+      'min-confidence': { type: 'string' },
+      'min-messages': { type: 'string' },
+      model: { type: 'string' },
+      interval: { type: 'string' },
+      cooldown: { type: 'string' },
+      'no-suggest': { type: 'boolean', default: false },
+      help: { type: 'boolean', default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -186,24 +155,15 @@ function parseCLIArgs(): ParsedCLI {
   }
 
   const cmd = positionals[0];
-  const command =
-    cmd === "run"
-      ? "run"
-      : cmd === "analyze"
-        ? "analyze"
-        : cmd === "rules"
-          ? "rules"
-          : cmd === "suggest"
-            ? "suggest"
-            : cmd === "apply"
-              ? "apply"
-              : cmd === "watch"
-                ? "watch"
-                : cmd === "init"
-                  ? "init"
-                  : values.session
-                    ? "session-detail"
-                    : "list";
+  const command = cmd === 'run' ? 'run'
+    : cmd === 'analyze' ? 'analyze'
+    : cmd === 'rules' ? 'rules'
+    : cmd === 'suggest' ? 'suggest'
+    : cmd === 'apply' ? 'apply'
+    : cmd === 'watch' ? 'watch'
+    : cmd === 'init' ? 'init'
+    : values.session ? 'session-detail'
+    : 'list';
 
   return {
     command,
@@ -221,13 +181,11 @@ function parseCLIArgs(): ParsedCLI {
       limit: values.limit ? parseInt(values.limit as string, 10) : undefined,
       force: Boolean(values.force),
       verbose: Boolean(values.verbose),
-      noCross: Boolean(values["no-cross"]),
-      dryRun: Boolean(values["dry-run"]),
+      noCross: Boolean(values['no-cross']),
+      dryRun: Boolean(values['dry-run']),
       yes: Boolean(values.yes),
       model: values.model as string | undefined,
-      minMessages: values["min-messages"]
-        ? parseInt(values["min-messages"] as string, 10)
-        : undefined,
+      minMessages: values['min-messages'] ? parseInt(values['min-messages'] as string, 10) : undefined,
     },
     rulesOptions: {
       project: values.project as string | undefined,
@@ -247,9 +205,9 @@ function parseCLIArgs(): ParsedCLI {
       all: Boolean(values.all),
       verbose: Boolean(values.verbose),
       yes: Boolean(values.yes),
-      dryRun: Boolean(values["dry-run"]),
-      minConfidence: values["min-confidence"]
-        ? parseFloat(values["min-confidence"] as string)
+      dryRun: Boolean(values['dry-run']),
+      minConfidence: values['min-confidence']
+        ? parseFloat(values['min-confidence'] as string)
         : undefined,
       limit: values.limit ? parseInt(values.limit as string, 10) : undefined,
       full: Boolean(values.full),
@@ -260,7 +218,7 @@ function parseCLIArgs(): ParsedCLI {
       interval: values.interval ? parseInt(values.interval as string, 10) : 300,
       cooldown: values.cooldown ? parseInt(values.cooldown as string, 10) : 60,
       model: values.model as string | undefined,
-      suggest: !Boolean(values["no-suggest"]),
+      suggest: !Boolean(values['no-suggest']),
       verbose: Boolean(values.verbose),
     },
   };
@@ -268,34 +226,34 @@ function parseCLIArgs(): ParsedCLI {
 
 async function main(): Promise<void> {
   if (isWindowsPlatform()) {
-    printError("Windows is not supported yet. macOS and Linux only.");
+    printError('Windows is not supported yet. macOS and Linux only.');
     process.exit(1);
   }
 
   const cli = parseCLIArgs();
 
   // Commands that don't need Claude projects discovery
-  if (cli.command === "rules") {
+  if (cli.command === 'rules') {
     await runRules(cli.rulesOptions);
     return;
   }
 
-  if (cli.command === "suggest") {
+  if (cli.command === 'suggest') {
     await runSuggest(cli.suggestOptions);
     return;
   }
 
-  if (cli.command === "apply") {
+  if (cli.command === 'apply') {
     await runApply(cli.applyOptions);
     return;
   }
 
-  if (cli.command === "init") {
+  if (cli.command === 'init') {
     await runInit(cli.applyOptions);
     return;
   }
 
-  if (cli.command === "watch") {
+  if (cli.command === 'watch') {
     await runWatch(cli.watchOptions);
     return;
   }
@@ -303,7 +261,7 @@ async function main(): Promise<void> {
   let projects = await discoverProjects();
   if (projects.length === 0) {
     printError(
-      "No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/",
+      'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/',
     );
     process.exit(1);
   }
@@ -311,25 +269,22 @@ async function main(): Promise<void> {
   // CWD-based project filtering (default behavior)
   if (!cli.options.project && !cli.options.all) {
     const cwd = process.cwd();
-    projects = projects.filter((p) => p.projectPath === cwd);
+    const projectRoot = await findProjectRoot(cwd);
+    const matchPath = projectRoot ?? cwd;
+    projects = projects.filter((p) => p.projectPath === matchPath);
     if (projects.length === 0) {
       printError(
-        `No Claude sessions found for ${cwd}.\n  Use --all to scan all projects, or --project <path> to target a specific one.\n  Tip: Run "claude /init" in this directory to set up CLAUDE.md.`,
+        `No Claude sessions found for ${matchPath}. Use --all to scan all projects.`,
       );
       process.exit(1);
     }
   }
 
-  if (cli.command === "run") {
-    await runRun(
-      projects,
-      cli.analyzeOptions,
-      cli.suggestOptions,
-      cli.applyOptions,
-    );
-  } else if (cli.command === "analyze") {
+  if (cli.command === 'run') {
+    await runRun(projects, cli.analyzeOptions, cli.suggestOptions, cli.applyOptions);
+  } else if (cli.command === 'analyze') {
     await runAnalyze(projects, cli.analyzeOptions);
-  } else if (cli.command === "session-detail") {
+  } else if (cli.command === 'session-detail') {
     await runSessionDetail(projects, cli.options);
   } else {
     await runList(projects, cli.options);
@@ -339,10 +294,16 @@ async function main(): Promise<void> {
 // === Rules command ===
 
 async function runRules(opts: RulesOptions): Promise<void> {
-  printRulesHeader();
-
   // Determine project root
-  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
+  const startDir = opts.project ? resolve(opts.project) : process.cwd();
+  const projectRoot = await findProjectRoot(startDir);
+
+  if (!projectRoot) {
+    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  printRulesHeader(projectRoot);
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -369,7 +330,7 @@ async function runRules(opts: RulesOptions): Promise<void> {
   }
 
   if (cached && opts.verbose) {
-    printVerbose("Cache valid but verbose mode — re-parsing for fresh data");
+    printVerbose('Cache valid but verbose mode — re-parsing for fresh data');
   }
 
   // Build snapshot
@@ -380,9 +341,9 @@ async function runRules(opts: RulesOptions): Promise<void> {
 
   // Warn about large files
   for (const file of snapshot.files) {
-    const lineCount = file.content.split("\n").length;
+    const lineCount = file.content.split('\n').length;
     if (lineCount > 500) {
-      printRulesFileLargeWarning(file.relativePath, lineCount);
+      printWarning(`${file.relativePath} is large (${lineCount} lines) — consider splitting it`);
     }
   }
 
@@ -397,19 +358,23 @@ async function runRules(opts: RulesOptions): Promise<void> {
 // === Suggest command ===
 
 async function runSuggest(opts: SuggestOptions): Promise<void> {
-  printSuggesterHeader();
+  // Determine project root
+  const startDir = opts.project ? resolve(opts.project) : process.cwd();
+  const projectRoot = await findProjectRoot(startDir);
+
+  if (!projectRoot) {
+    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  printSuggesterHeader(projectRoot);
 
   // Check Claude CLI
   const cliAvailable = await checkCliAvailable();
   if (!cliAvailable) {
-    printError(
-      "Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code",
-    );
+    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
-
-  // Determine project root
-  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -446,8 +411,7 @@ async function runSuggest(opts: SuggestOptions): Promise<void> {
   }
 
   // Load insights + rules
-  let { insights, crossPatterns, rulesSnapshot, filteredOut } =
-    await loadSuggestionInputs(storeDir, projectRoot);
+  let { insights, crossPatterns, rulesSnapshot, filteredOut } = await loadSuggestionInputs(storeDir, projectRoot);
 
   // If called from the run pipeline with scoped IDs, filter to only those
   if (opts.scopedInsightIds) {
@@ -471,7 +435,7 @@ async function runSuggest(opts: SuggestOptions): Promise<void> {
   }
 
   // Check suggestion cache before calling the LLM
-  const promptVersion = await getPromptVersion("suggestion-generation");
+  const promptVersion = await getPromptVersion('suggestion-generation');
   const cacheKey = computeSuggestionCacheKey(
     insights.map((i) => i.id),
     crossPatterns.map((p) => p.id),
@@ -482,15 +446,9 @@ async function runSuggest(opts: SuggestOptions): Promise<void> {
   const cachedSet = await findSuggestionSetByCacheKey(storeDir, cacheKey);
   if (cachedSet) {
     if (opts.verbose) {
-      printVerbose(
-        `Suggestion cache hit (key: ${cacheKey}) — skipping LLM calls`,
-      );
+      printVerbose(`Suggestion cache hit (key: ${cacheKey}) — skipping LLM calls`);
     }
-    printSuggestionGenerated(
-      cachedSet.suggestions.length,
-      cachedSet.stats.insightsSkipped,
-      0,
-    );
+    printSuggestionGenerated(cachedSet.suggestions.length, cachedSet.stats.insightsSkipped, 0);
     printSuggestionResults(cachedSet, []);
     return;
   }
@@ -498,44 +456,31 @@ async function runSuggest(opts: SuggestOptions): Promise<void> {
   // Generate suggestions via LLM
   printSuggestionGenerating();
 
-  const result = await generateSuggestions(
-    insights,
-    crossPatterns,
-    rulesSnapshot,
-    opts.verbose,
-    opts.model as ModelName | undefined,
-  );
+  const result = await generateSuggestions(insights, crossPatterns, rulesSnapshot, opts.verbose, opts.model as ModelName | undefined);
 
   // Dedup and rank
   const ranked = dedupAndRank(result.suggestions);
 
-  printSuggestionGenerated(
-    ranked.length,
-    result.skipped.length,
-    result.durationMs / 1000,
-  );
+  printSuggestionGenerated(ranked.length, result.skipped.length, result.durationMs / 1000);
 
   // Build stats
   const stats = {
     total: ranked.length,
     byType: {
-      add: ranked.filter((s) => s.type === "add").length,
-      update: ranked.filter((s) => s.type === "update").length,
-      remove: ranked.filter((s) => s.type === "remove").length,
-      consolidate: ranked.filter((s) => s.type === "consolidate").length,
-      split: ranked.filter((s) => s.type === "split").length,
+      add: ranked.filter((s) => s.type === 'add').length,
+      update: ranked.filter((s) => s.type === 'update').length,
+      remove: ranked.filter((s) => s.type === 'remove').length,
+      consolidate: ranked.filter((s) => s.type === 'consolidate').length,
+      split: ranked.filter((s) => s.type === 'split').length,
     },
     byPriority: {
-      high: ranked.filter((s) => s.priority === "high").length,
-      medium: ranked.filter((s) => s.priority === "medium").length,
-      low: ranked.filter((s) => s.priority === "low").length,
+      high: ranked.filter((s) => s.priority === 'high').length,
+      medium: ranked.filter((s) => s.priority === 'medium').length,
+      low: ranked.filter((s) => s.priority === 'low').length,
     },
-    insightsUsed:
-      insights.length + crossPatterns.length - result.skipped.length,
+    insightsUsed: insights.length + crossPatterns.length - result.skipped.length,
     insightsSkipped: result.skipped.length,
-    estimatedRulesAfter:
-      rulesSnapshot.stats.totalRules +
-      ranked.filter((s) => s.type === "add").length,
+    estimatedRulesAfter: rulesSnapshot.stats.totalRules + ranked.filter((s) => s.type === 'add').length,
   };
 
   const suggestionSet = {
@@ -561,7 +506,7 @@ function promptConfirmation(prompt: string): Promise<boolean> {
   return new Promise((resolve) => {
     rl.question(prompt, (answer) => {
       rl.close();
-      resolve(answer.trim().toLowerCase() === "y");
+      resolve(answer.trim().toLowerCase() === 'y');
     });
   });
 }
@@ -574,39 +519,36 @@ async function runRun(
   suggestOpts: SuggestOptions,
   applyOpts: ApplyOptions,
 ): Promise<void> {
-  console.log(
-    chalk.green("==> ") + chalk.bold("ContextLinter \u2014 Full Pipeline"),
-  );
-  console.log();
-
   // Determine project root for store checks between steps
-  const projectRoot = suggestOpts.project
-    ? resolve(suggestOpts.project)
-    : process.cwd();
+  const startDir = suggestOpts.project ? resolve(suggestOpts.project) : process.cwd();
+  const projectRoot = await findProjectRoot(startDir);
+
+  if (!projectRoot) {
+    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  const bannerLines = buildBanner('Full Pipeline', projectRoot);
+  for (const line of bannerLines) console.log(line);
+  console.log();
 
   // Step 1: Analyze
   const analyzeOutput = await runAnalyze(projects, analyzeOpts);
 
   // Check if there are insights to work with
   const storeDir = await initStoreDir(projectRoot);
-  const { insights, crossPatterns } = await loadSuggestionInputs(
-    storeDir,
-    projectRoot,
-  );
+  const { insights, crossPatterns } = await loadSuggestionInputs(storeDir, projectRoot);
 
   if (insights.length === 0 && crossPatterns.length === 0) {
     console.log();
-    console.log("No insights found \u2014 nothing to suggest.");
+    console.log('No insights found \u2014 nothing to suggest.');
     return;
   }
 
   // Step 2: Suggest (without --full since we already analyzed)
   // If analyze produced new insights, scope suggest to only those.
   // If nothing new (all already analyzed), process everything from disk.
-  const allScopedIds = [
-    ...analyzeOutput.insightIds,
-    ...analyzeOutput.crossPatternIds,
-  ];
+  const allScopedIds = [...analyzeOutput.insightIds, ...analyzeOutput.crossPatternIds];
   const scopedInsightIds = allScopedIds.length > 0 ? allScopedIds : undefined;
   await runSuggest({ ...suggestOpts, full: false, scopedInsightIds });
 
@@ -614,7 +556,7 @@ async function runRun(
   const suggestionSet = await loadLatestSuggestionSet(storeDir);
   if (!suggestionSet || suggestionSet.suggestions.length === 0) {
     console.log();
-    console.log("No suggestions generated \u2014 nothing to apply.");
+    console.log('No suggestions generated \u2014 nothing to apply.');
     return;
   }
 
@@ -629,18 +571,16 @@ interface AnalyzeOutput {
   crossPatternIds: string[];
 }
 
-async function runAnalyze(
-  projects: ProjectInfo[],
-  opts: AnalyzeOptions,
-): Promise<AnalyzeOutput> {
-  printAnalyzerHeader();
+async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promise<AnalyzeOutput> {
+  const analyzeProjectRoot = opts.project
+    ? await findProjectRoot(resolve(opts.project))
+    : projects[0]?.projectPath;
+  printAnalyzerHeader(analyzeProjectRoot ?? undefined);
 
   // Check Claude CLI
   const cliAvailable = await checkCliAvailable();
   if (!cliAvailable) {
-    printError(
-      "Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code",
-    );
+    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
 
@@ -653,7 +593,7 @@ async function runAnalyze(
     }
   }
 
-  const promptVersion = await getPromptVersion("session-analysis");
+  const promptVersion = await getPromptVersion('session-analysis');
 
   const allInsightIds: string[] = [];
   const allCrossPatternIds: string[] = [];
@@ -667,10 +607,7 @@ async function runAnalyze(
 
     // Verbose: show all sessions before filtering
     if (opts.verbose) {
-      printSessionsDebugList(
-        project.sessions,
-        `All sessions for ${project.projectPath}`,
-      );
+      printSessionsDebugList(project.sessions, `All sessions for ${shortPath(project.projectPath)}`);
     }
 
     const minMessages = opts.minMessages ?? 2;
@@ -679,11 +616,7 @@ async function runAnalyze(
     const parsed: SessionInfo[] = [];
     for (const sessionFile of project.sessions) {
       try {
-        const cached = await getCachedSession(
-          storeDir,
-          sessionFile.sessionId,
-          sessionFile.filePath,
-        );
+        const cached = await getCachedSession(storeDir, sessionFile.sessionId, sessionFile.filePath);
         if (cached) {
           parsed.push(cached);
           continue;
@@ -699,38 +632,24 @@ async function runAnalyze(
         // Cache and record in audit
         await cacheSession(storeDir, info);
         const fileStat = await stat(sessionFile.filePath);
-        audit = markSessionParsed(
-          audit,
-          sessionFile.sessionId,
-          fileStat.mtimeMs,
-        );
+        audit = markSessionParsed(audit, sessionFile.sessionId, fileStat.mtimeMs);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        printWarning(
-          `Failed to parse session ${sessionFile.sessionId}: ${msg}`,
-        );
+        printWarning(`Failed to parse session ${sessionFile.sessionId}: ${msg}`);
       }
     }
 
     // Verbose: show parsed sessions with message counts before filtering
     if (opts.verbose) {
-      console.log(chalk.dim(`    Parsed sessions (${parsed.length}):`));
+      console.log(treeCont(tertiary(`Parsed sessions (${parsed.length}):`)));
       for (const s of parsed) {
-        const shortId = s.sessionId.slice(0, 12);
+        const shortId = s.sessionId.slice(0, 8);
         const date = s.firstTimestamp
-          ? new Date(s.firstTimestamp)
-              .toISOString()
-              .slice(0, 16)
-              .replace("T", " ")
-          : "?";
+          ? new Date(s.firstTimestamp).toISOString().slice(0, 16).replace('T', ' ')
+          : '?';
         const msgs = `${s.userMessageCount} user / ${s.assistantMessageCount} asst`;
-        console.log(
-          chalk.dim(
-            `             Session ${shortId} | ${date} | ${msgs} | ${s.projectPath}`,
-          ),
-        );
+        console.log(treeCont(tertiary(`  ${shortId} | ${date} | ${msgs} | ${shortPath(s.projectPath)}`)));
       }
-      console.log();
     }
 
     // Filter out short sessions first, then apply --limit
@@ -740,24 +659,20 @@ async function runAnalyze(
     for (const session of parsed) {
       if (!isSessionAnalyzable(session, minMessages)) {
         skippedCount++;
-        if (opts.verbose)
-          printSessionSkipped(
-            session.sessionId,
-            `too short (<${minMessages} user messages)`,
-          );
         continue;
       }
       analyzable.push(session);
     }
 
+    // Always show skipped summary (verbose already has full session list above)
+    if (skippedCount > 0) {
+      printSkippedSummary(skippedCount);
+    }
+
     // Apply --limit after filtering: take N newest from analyzable sessions
     const limited = opts.limit ? analyzable.slice(0, opts.limit) : analyzable;
     if (opts.limit && opts.verbose) {
-      console.log(
-        chalk.dim(
-          `    After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`,
-        ),
-      );
+      console.log(treeCont(tertiary(`After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`)));
     }
 
     // Determine which sessions need analysis
@@ -766,14 +681,7 @@ async function runAnalyze(
 
     for (const session of limited) {
       const fileStat = await stat(session.filePath);
-      const needs =
-        opts.force ||
-        needsAnalysis(
-          audit,
-          session.sessionId,
-          promptVersion,
-          fileStat.mtimeMs,
-        );
+      const needs = opts.force || needsAnalysis(audit, session.sessionId, promptVersion, fileStat.mtimeMs);
 
       if (needs) {
         toAnalyze.push(session);
@@ -782,53 +690,41 @@ async function runAnalyze(
       }
     }
 
-    if (!opts.verbose && skippedCount > 0) {
-      printSkippedSummary(skippedCount, minMessages);
-    }
-
     if (toAnalyze.length === 0 && alreadyAnalyzed > 0) {
       printNothingToAnalyze();
       continue;
     }
 
     if (toAnalyze.length === 0) {
-      if (opts.verbose) printVerbose("No analyzable sessions found.");
+      console.log(lastSub(secondary('No analyzable sessions found.')));
+      console.log();
       continue;
     }
 
-    printAnalysisSummaryLine(
-      toAnalyze.length,
-      alreadyAnalyzed,
-      project.projectPath,
-    );
+    printAnalysisSummaryLine(toAnalyze.length, alreadyAnalyzed, project.projectPath);
 
     // Prompt for confirmation if many sessions and not auto-confirmed
     if (toAnalyze.length > 10 && !opts.yes && !opts.limit) {
-      const estimatedSeconds =
-        toAnalyze.reduce((sum, s) => {
-          return sum + 10 + Math.min(s.userMessageCount, 300) * 0.12;
-        }, 0) + Math.max(0, toAnalyze.length - 1);
+      const estimatedSeconds = toAnalyze.reduce((sum, s) => {
+        return sum + 10 + Math.min(s.userMessageCount, 300) * 0.12;
+      }, 0) + Math.max(0, toAnalyze.length - 1);
       const estimatedMinutes = Math.ceil(estimatedSeconds / 60);
-      const crossNote =
-        !opts.noCross && toAnalyze.length >= 2
-          ? " + 1 cross-session synthesis"
-          : "";
+      const crossNote = !opts.noCross && toAnalyze.length >= 2
+        ? ' + 1 cross-session synthesis' : '';
 
       const parts: string[] = [];
       if (alreadyAnalyzed > 0) parts.push(`${alreadyAnalyzed} already done`);
       if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
-      const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+      const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
 
       console.log(`Found ${toAnalyze.length} sessions to analyze${detail}.`);
       console.log(`Estimated time: ~${estimatedMinutes} minutes`);
-      console.log(
-        `Estimated cost: ~${toAnalyze.length} LLM calls (session analysis)${crossNote}`,
-      );
+      console.log(`Estimated cost: ~${toAnalyze.length} LLM calls (session analysis)${crossNote}`);
       console.log();
 
-      const confirmed = await promptConfirmation("Continue? [y/N] ");
+      const confirmed = await promptConfirmation('Continue? [y/N] ');
       if (!confirmed) {
-        console.log("Aborted.");
+        console.log('Aborted.');
         process.exit(0);
       }
       console.log();
@@ -837,7 +733,7 @@ async function runAnalyze(
     // Dry run mode
     if (opts.dryRun) {
       for (const session of toAnalyze) {
-        const reason = opts.force ? "forced" : "new/changed";
+        const reason = opts.force ? 'forced' : 'new/changed';
         printDryRun(session.sessionId, session.userMessageCount, reason);
       }
       console.log();
@@ -850,27 +746,16 @@ async function runAnalyze(
       const session = toAnalyze[i];
       printAnalysisProgress(session.sessionId, session.userMessageCount);
 
-      const result = await analyzeSingleSession(
-        session,
-        opts.verbose,
-        opts.model as ModelName | undefined,
-      );
+      const result = await analyzeSingleSession(session, opts.verbose, opts.model as ModelName | undefined);
       results.push(result);
 
       // Save result and update audit
       await saveAnalysisResult(storeDir, result);
-      audit = markSessionAnalyzed(
-        audit,
-        session.sessionId,
-        promptVersion,
-        result.insights.length,
-      );
+      audit = markSessionAnalyzed(audit, session.sessionId, promptVersion, result.insights.length);
       await saveAuditLog(storeDir, audit);
 
-      printAnalysisDone(
-        result.insights.length,
-        result.stats.analysisTimeMs / 1000,
-      );
+      const hasMoreWork = i < toAnalyze.length - 1 || (!opts.noCross && toAnalyze.length >= 2);
+      printAnalysisDone(result.insights.length, result.stats.analysisTimeMs / 1000, !hasMoreWork);
 
       // Rate limiting: 1s delay between calls (except last)
       if (i < toAnalyze.length - 1) {
@@ -879,24 +764,15 @@ async function runAnalyze(
     }
 
     // Cross-session synthesis
-    let crossPatterns: import("./analyzer/types.js").CrossSessionPattern[] = [];
+    let crossPatterns: import('./analyzer/types.js').CrossSessionPattern[] = [];
 
     if (!opts.noCross && results.length >= 2) {
       const allInsights = results.flatMap((r) => r.insights);
       if (allInsights.length > 0) {
-        console.log();
-        if (opts.verbose) {
-          printVerbose(
-            `Cross-session synthesis (${allInsights.length} insights from ${results.length} sessions)...`,
-          );
-        }
+        const crossText = `Cross-session synthesis (${allInsights.length} insights from ${results.length} sessions)...`;
+        console.log(substep(crossText));
 
-        crossPatterns = await synthesizeCrossSessions(
-          results,
-          project.projectPath,
-          opts.verbose,
-          opts.model as ModelName | undefined,
-        );
+        crossPatterns = await synthesizeCrossSessions(results, project.projectPath, opts.verbose, opts.model as ModelName | undefined);
 
         if (crossPatterns.length > 0) {
           await saveCrossSessionPatterns(storeDir, crossPatterns);
@@ -904,16 +780,14 @@ async function runAnalyze(
           await saveAuditLog(storeDir, audit);
 
           console.log(
-            chalk.green(
-              `  \u2713 ${crossPatterns.length} cross-session pattern${crossPatterns.length === 1 ? "" : "s"} found`,
-            ),
+            success(`${crossPatterns.length} cross-session pattern${crossPatterns.length === 1 ? '' : 's'} found`),
           );
         }
       }
     }
 
     console.log();
-    printInsightResults(results, crossPatterns, project.projectPath);
+    printInsightResults(results, crossPatterns);
 
     // Accumulate IDs for the caller (used by run pipeline to scope suggest)
     allInsightIds.push(...results.flatMap((r) => r.insights.map((i) => i.id)));
@@ -925,10 +799,7 @@ async function runAnalyze(
 
 // === Session detail command ===
 
-async function runSessionDetail(
-  projects: ProjectInfo[],
-  opts: CLIOptions,
-): Promise<void> {
+async function runSessionDetail(projects: ProjectInfo[], opts: CLIOptions): Promise<void> {
   printHeader();
 
   if (opts.verbose) {
@@ -952,10 +823,7 @@ async function runSessionDetail(
 
 // === List command ===
 
-async function runList(
-  projects: ProjectInfo[],
-  opts: CLIOptions,
-): Promise<void> {
+async function runList(projects: ProjectInfo[], opts: CLIOptions): Promise<void> {
   printHeader();
 
   if (opts.verbose) {
@@ -1006,7 +874,8 @@ async function runList(
           printVerbose(`Session ${info.sessionId}: no messages parsed`);
         }
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg =
+          err instanceof Error ? err.message : String(err);
         printWarning(
           `Failed to parse session ${sessionFile.sessionId}: ${msg}`,
         );
@@ -1032,22 +901,25 @@ async function runList(
 // === Apply command ===
 
 async function runApply(opts: ApplyOptions): Promise<void> {
-  console.log(
-    chalk.green("==> ") + chalk.bold("ContextLinter \u2014 Apply Suggestions"),
-  );
+  // Determine project root
+  const startDir = opts.project ? resolve(opts.project) : process.cwd();
+  const projectRoot = await findProjectRoot(startDir);
+
+  if (!projectRoot) {
+    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  const applyBanner = buildBanner('Apply', projectRoot);
+  for (const line of applyBanner) console.log(line);
   console.log();
 
   // Check Claude CLI (needed for --full pipeline)
   const cliAvailable = await checkCliAvailable();
   if (!cliAvailable) {
-    printError(
-      "Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code",
-    );
+    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
-
-  // Determine project root
-  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -1059,9 +931,7 @@ async function runApply(opts: ApplyOptions): Promise<void> {
   const existingSuggestions = await loadLatestSuggestionSet(storeDir);
   if (opts.full || !existingSuggestions) {
     if (!existingSuggestions && !opts.full) {
-      console.log(
-        chalk.dim("No existing suggestions found. Running full pipeline..."),
-      );
+      console.log(secondary('No existing suggestions found. Running full pipeline...'));
       console.log();
     }
 
@@ -1079,19 +949,15 @@ async function runApply(opts: ApplyOptions): Promise<void> {
   // Load the latest suggestions
   const suggestionSet = await loadLatestSuggestionSet(storeDir);
   if (!suggestionSet || suggestionSet.suggestions.length === 0) {
-    console.log("Your rules are up to date! Nothing to change.");
+    console.log('Your rules are up to date! Nothing to change.');
     console.log();
     return;
   }
 
   // Filter to pending suggestions only
-  const pending = suggestionSet.suggestions.filter(
-    (s) => s.status === "pending",
-  );
+  const pending = suggestionSet.suggestions.filter((s) => s.status === 'pending');
   if (pending.length === 0) {
-    console.log(
-      'All suggestions have already been processed. Run "suggest" to generate new ones.',
-    );
+    console.log('All suggestions have already been processed. Run "suggest" to generate new ones.');
     console.log();
     return;
   }
@@ -1105,60 +971,42 @@ async function runApply(opts: ApplyOptions): Promise<void> {
 async function runInit(opts: ApplyOptions): Promise<void> {
   const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
-  const commandDir = join(projectRoot, ".claude", "commands");
-  const commandPath = join(commandDir, "clinter.md");
+  const commandDir = join(projectRoot, '.claude', 'commands');
+  const commandPath = join(commandDir, 'contextlinter.md');
 
   // Read the template from our own .claude/commands/
   const contextlinterRoot = dirname(new URL(import.meta.url).pathname);
-  const templatePath = join(
-    contextlinterRoot,
-    "..",
-    ".claude",
-    "commands",
-    "clinter.md",
-  );
+  const templatePath = join(contextlinterRoot, '..', '.claude', 'commands', 'contextlinter.md');
 
   let template: string;
   try {
-    template = await readFile(templatePath, "utf-8");
+    template = await readFile(templatePath, 'utf-8');
   } catch {
     // Fallback: generate inline
-    template = generateSlashCommandTemplate(contextlinterRoot);
+    template = generateSlashCommandTemplate();
   }
 
-  // Replace the hardcoded path with the actual contextlinter path
-  const contextlinterSrcIndex = join(
-    dirname(contextlinterRoot),
-    "src",
-    "index.ts",
-  );
-  template = template.replace(
-    /npx tsx \/[^\s]+\/src\/index\.ts/g,
-    `npx tsx ${contextlinterSrcIndex}`,
-  );
-
   await mkdir(commandDir, { recursive: true });
-  await writeFile(commandPath, template, "utf-8");
+  await writeFile(commandPath, template, 'utf-8');
 
-  console.log(chalk.green(`\u2713 Created ${commandPath}`));
+  for (const line of buildBanner('Init', projectRoot)) {
+    console.log(line);
+  }
   console.log();
-  console.log(
-    chalk.dim(
-      "You can now use /clinter in Claude Code to run the analysis pipeline.",
-    ),
-  );
+  console.log(step('Initialize Slash Command'));
+  console.log(success(`Created ${commandPath}`, false));
+  console.log(lastSub(secondary('You can now use /contextlinter in Claude Code to run the analysis pipeline.')));
   console.log();
 }
 
-function generateSlashCommandTemplate(srcDir: string): string {
-  const indexPath = join(srcDir, "index.ts");
+function generateSlashCommandTemplate(): string {
   return `Run the ContextLinter analysis pipeline to suggest improvements to this project's rules files.
 
 ## Steps
 
 1. Run the ContextLinter CLI to generate suggestions:
    \`\`\`bash
-   npx tsx ${indexPath} suggest --full --limit 10 --verbose
+   npx contextlinter suggest --full --limit 10 --verbose
    \`\`\`
 
 2. Read the latest suggestion set from \`.contextlinter/suggestions/\` (most recent JSON file).

@@ -26,7 +26,7 @@ import { dedupAndRank } from './suggester/dedup.js';
 import { saveSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
 import { printError, printVerbose, printWarning } from './utils/logger.js';
 import { color } from './ui/theme.js';
-import { step, substep, lastSub, success, shortPath } from './ui/format.js';
+import { step, substep, lastSub, success } from './ui/format.js';
 import { buildBanner } from './ui/banner.js';
 
 export interface WatchOptions {

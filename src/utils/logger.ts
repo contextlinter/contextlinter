@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 import type {
   NormalizedMessage,
   ProjectInfo,
@@ -14,24 +13,40 @@ import type {
 import type { RulesFile, RulesSnapshot } from '../rules-reader/types.js';
 import type { Suggestion, SuggestionSet } from '../suggester/types.js';
 import { formatFileSize } from './paths.js';
-
-const VERSION = '0.1.0';
+import { color, icon } from '../ui/theme.js';
+import {
+  step,
+  substep,
+  lastSub,
+  success,
+  error,
+  warn,
+  filePath,
+  secondary,
+  tertiary,
+  treeCont,
+  diffAdd,
+  diffRemove,
+  priorityLabel,
+  shortPath,
+} from '../ui/format.js';
+import { buildBanner } from '../ui/banner.js';
 
 export function printHeader(): void {
-  console.log(
-    chalk.green(`==> `) + chalk.bold(`ContextLinter Session Reader v${VERSION}`),
-  );
+  for (const line of buildBanner('Sessions', undefined, { Scope: 'all projects' })) {
+    console.log(line);
+  }
   console.log();
 }
 
 export function printProjectHeader(project: ProjectInfo): void {
-  console.log(chalk.bold(`Project: ${project.projectPath}`));
-  console.log(chalk.dim(`   Sessions: ${project.sessions.length}`));
+  console.log(step(`Project: ${shortPath(project.projectPath)}`));
+  console.log(lastSub(`Sessions: ${project.sessions.length}`));
 }
 
 export function printSessionsTable(sessions: SessionInfo[]): void {
   if (sessions.length === 0) {
-    console.log(chalk.dim('   No sessions found.'));
+    console.log(secondary('   No sessions found.'));
     console.log();
     return;
   }
@@ -39,8 +54,8 @@ export function printSessionsTable(sessions: SessionInfo[]): void {
   const header = `   ${'#'.padStart(3)}   ${'Date'.padEnd(10)}   ${'Duration'.padEnd(8)}   ${'Messages'.padEnd(8)}   ${'Tools'.padEnd(5)}   Size`;
   const separator = `   ${'─'.repeat(3)}──${'─'.repeat(10)}──${'─'.repeat(8)}──${'─'.repeat(8)}──${'─'.repeat(5)}──${'─'.repeat(7)}`;
 
-  console.log(chalk.dim(header));
-  console.log(chalk.dim(separator));
+  console.log(tertiary(header));
+  console.log(tertiary(separator));
 
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
@@ -56,7 +71,7 @@ export function printSessionsTable(sessions: SessionInfo[]): void {
     const size = formatFileSize(s.fileSize);
 
     console.log(
-      `   ${chalk.bold(num)}  ${date}  ${duration}  ${msgs}  ${tools}  ${size}`,
+      `   ${color.bold(num)}  ${date}  ${duration}  ${msgs}  ${tools}  ${size}`,
     );
   }
 
@@ -69,11 +84,9 @@ export function printSummary(
   totalDurationMinutes: number,
 ): void {
   const hours = (totalDurationMinutes / 60).toFixed(1);
+  console.log(step('Summary'));
   console.log(
-    chalk.green(`==> `) + chalk.bold(`Summary`),
-  );
-  console.log(
-    `    ${chalk.bold(String(totalProjects))} projects, ${chalk.bold(String(totalSessions))} sessions, ${chalk.bold(hours + 'h')} total`,
+    lastSub(`${color.bold(String(totalProjects))} projects, ${color.bold(String(totalSessions))} sessions, ${color.bold(hours + 'h')} total`),
   );
   console.log();
 }
@@ -84,14 +97,14 @@ export function printSessionDetail(session: SessionInfo): void {
     ? `(${session.durationMinutes} min)`
     : '';
 
-  console.log(chalk.green(`==> `) + chalk.bold(`Session: ${session.sessionId}`));
-  console.log(`    Project: ${session.projectPath}`);
-  console.log(`    Date: ${dateRange} ${duration}`);
+  console.log(step(`Session: ${session.sessionId}`));
+  console.log(substep(`Project: ${shortPath(session.projectPath)}`));
+  console.log(substep(`Date: ${dateRange} ${duration}`));
   console.log(
-    `    Messages: ${session.userMessageCount} user, ${session.assistantMessageCount} assistant, ${session.toolUseCount} tool uses`,
+    substep(`Messages: ${session.userMessageCount} user, ${session.assistantMessageCount} assistant, ${session.toolUseCount} tool uses`),
   );
   if (session.summary) {
-    console.log(chalk.dim(`    Summary: ${session.summary}`));
+    console.log(substep(secondary(`Summary: ${session.summary}`)));
   }
   console.log();
 
@@ -112,10 +125,10 @@ function printMessage(msg: NormalizedMessage): void {
   const roleLabel = msg.role.toUpperCase();
   const roleColor =
     msg.role === 'user'
-      ? chalk.bold
-      : chalk.dim;
+      ? color.bold
+      : secondary;
 
-  console.log(`${chalk.dim(`[${time}]`)} ${roleColor(roleLabel + ':')}`);
+  console.log(`${tertiary(`[${time}]`)} ${roleColor(roleLabel + ':')}`);
 
   if (msg.textContent) {
     const lines = msg.textContent.split('\n');
@@ -124,19 +137,19 @@ function printMessage(msg: NormalizedMessage): void {
       console.log(`  ${line}`);
     }
     if (lines.length > 6) {
-      console.log(chalk.dim(`  ... (${lines.length - 6} more lines)`));
+      console.log(secondary(`  ... (${lines.length - 6} more lines)`));
     }
   }
 
   for (const tool of msg.toolUses) {
     const inputPreview = formatToolInput(tool.name, tool.input);
-    console.log(chalk.dim(`  ${tool.name}${inputPreview ? ': ' + inputPreview : ''}`));
+    console.log(tertiary(`  ${tool.name}${inputPreview ? ': ' + inputPreview : ''}`));
   }
 
   for (const result of msg.toolResults) {
     if (result.content) {
       const preview = result.content.slice(0, 80).replace(/\n/g, ' ');
-      console.log(chalk.dim(`  \u2190 ${preview}${result.content.length > 80 ? '...' : ''}`));
+      console.log(tertiary(`  \u2190 ${preview}${result.content.length > 80 ? '...' : ''}`));
     }
   }
 
@@ -148,7 +161,6 @@ function formatToolInput(name: string, input: unknown): string {
 
   const obj = input as Record<string, unknown>;
 
-  // Show the most useful field for common tools
   if (name === 'Bash' && typeof obj.command === 'string') {
     return truncate(obj.command, 80);
   }
@@ -199,15 +211,15 @@ function formatDateRange(
 }
 
 export function printWarning(message: string): void {
-  console.log(chalk.yellow(`Warning: ${message}`));
+  console.log(warn(message));
 }
 
 export function printError(message: string): void {
-  console.log(chalk.red(`\u2717 ${message}`));
+  console.log(error(message));
 }
 
 export function printVerbose(message: string): void {
-  console.log(chalk.dim(`    ${message}`));
+  console.log(treeCont(tertiary(message)));
 }
 
 // === Analyzer output ===
@@ -222,68 +234,68 @@ const CATEGORY_LABELS: Record<InsightCategory, string> = {
   tool_usage_pattern: 'TOOL USAGE PATTERN',
 };
 
-export function printAnalyzerHeader(): void {
-  console.log(
-    chalk.green(`==> `) + chalk.bold(`ContextLinter Analyzer v${VERSION}`),
-  );
+export function printAnalyzerHeader(projectRoot?: string): void {
+  for (const line of buildBanner('Analyze', projectRoot)) {
+    console.log(line);
+  }
   console.log();
+  console.log(step('Analyzing Sessions'));
 }
 
 export function printAnalysisProgress(
   sessionId: string,
   userMessages: number,
 ): void {
-  const shortId = sessionId.slice(0, 12);
-  console.log(`    Analyzing session ${shortId} (${userMessages} user messages)...`);
+  const shortId = sessionId.slice(0, 8);
+  console.log(substep(`Analyzing ${shortId} (${userMessages} msgs)...`));
 }
 
-export function printAnalysisDone(insightCount: number, durationSec: number): void {
+export function printAnalysisDone(insightCount: number, durationSec: number, isLast = true): void {
   if (insightCount > 0) {
-    console.log(chalk.green(`  \u2713 ${insightCount} insight${insightCount === 1 ? '' : 's'} found`) + chalk.dim(` (${durationSec.toFixed(1)}s)`));
+    console.log(success(`${insightCount} insight${insightCount === 1 ? '' : 's'} found ${secondary(`(${durationSec.toFixed(1)}s)`)}`, isLast));
   } else {
-    console.log(chalk.dim(`    No insights found (${durationSec.toFixed(1)}s)`));
+    if (isLast) {
+      console.log(lastSub(secondary(`No insights found (${durationSec.toFixed(1)}s)`)));
+    } else {
+      console.log(substep(secondary(`No insights found (${durationSec.toFixed(1)}s)`)));
+    }
   }
 }
 
 export function printSessionSkipped(sessionId: string, reason: string): void {
-  const shortId = sessionId.slice(0, 12);
-  console.log(chalk.dim(`    Skipping ${shortId}: ${reason}`));
+  const shortId = sessionId.slice(0, 8);
+  console.log(substep(secondary(`Skipped ${shortId}: ${reason}`)));
 }
 
-export function printSkippedSummary(count: number, minMessages: number): void {
+export function printSkippedSummary(count: number): void {
   if (count > 0) {
-    console.log(chalk.dim(`    Skipped ${count} session${count === 1 ? '' : 's'} (too short, <${minMessages} user messages)`));
+    console.log(substep(secondary(`Skipped ${count} session${count === 1 ? '' : 's'} (too short)`)));
   }
 }
 
 export function printSessionsDebugList(sessions: SessionFileInfo[], label: string): void {
-  console.log(chalk.dim(`    ${label} (${sessions.length} sessions):`));
+  console.log(substep(tertiary(`${label} (${sessions.length} sessions)`)));
   for (const s of sessions) {
-    const shortId = s.sessionId.slice(0, 12);
+    const shortId = s.sessionId.slice(0, 8);
     const date = s.createdAt
       ? s.createdAt.toISOString().slice(0, 16).replace('T', ' ')
       : s.modifiedAt.toISOString().slice(0, 16).replace('T', ' ');
-    const source = s.createdAt ? '' : chalk.dim(' (mtime)');
+    const source = s.createdAt ? '' : ' (mtime)';
     const size = formatFileSize(s.fileSize);
-    console.log(chalk.dim(`             Session ${shortId} | ${date}${source} | ${size}`));
+    console.log(treeCont(tertiary(`Session ${shortId} | ${date}${source} | ${size}`)));
   }
-  console.log();
 }
 
 export function printInsightResults(
   results: AnalysisResult[],
   crossPatterns: CrossSessionPattern[],
-  projectPath: string,
 ): void {
   const allInsights = results.flatMap((r) => r.insights);
   if (allInsights.length === 0 && crossPatterns.length === 0) {
-    console.log(chalk.dim('No insights found across analyzed sessions.'));
+    console.log(secondary('No insights found across analyzed sessions.'));
     console.log();
     return;
   }
-
-  console.log(chalk.green(`==> `) + chalk.bold(`Results for: ${projectPath}`));
-  console.log();
 
   // Group insights by category
   const byCategory = new Map<InsightCategory, Insight[]>();
@@ -293,81 +305,83 @@ export function printInsightResults(
     byCategory.set(insight.category, existing);
   }
 
-  for (const [category, insights] of byCategory) {
-    printCategoryBlock(category, insights);
+  const categories = [...byCategory.entries()];
+  const hasCross = crossPatterns.length > 0;
+
+  for (let ci = 0; ci < categories.length; ci++) {
+    const [category, insights] = categories[ci];
+    printCategoryBlock(category, insights, ci === categories.length - 1 && !hasCross);
   }
 
   // Cross-session patterns
-  if (crossPatterns.length > 0) {
-    console.log(chalk.bold(`Cross-session patterns (${crossPatterns.length})`));
-    console.log();
-    for (const pattern of crossPatterns) {
-      printCrossPattern(pattern);
-    }
-    console.log();
+  if (hasCross) {
+    printCrossPatternsBlock(crossPatterns);
   }
 
   // Summary
   const totalAnalysisTime = results.reduce((sum, r) => sum + r.stats.analysisTimeMs, 0);
   const sessionsWithInsights = results.filter((r) => r.insights.length > 0).length;
 
+  console.log(step('Summary'));
   console.log(
-    chalk.green(`==> `) + chalk.bold(`Summary`),
+    substep(`${color.bold(String(allInsights.length))} insights from ${sessionsWithInsights}/${results.length} sessions` +
+    (crossPatterns.length > 0 ? `, ${color.bold(String(crossPatterns.length))} cross-session patterns` : '')),
   );
-  console.log(
-    `    ${chalk.bold(String(allInsights.length))} insights from ${sessionsWithInsights}/${results.length} sessions` +
-    (crossPatterns.length > 0 ? `, ${chalk.bold(String(crossPatterns.length))} cross-session patterns` : ''),
-  );
-  console.log(chalk.dim(`    Analysis time: ${(totalAnalysisTime / 1000).toFixed(1)}s total`));
+  console.log(lastSub(secondary(`Analysis time: ${(totalAnalysisTime / 1000).toFixed(1)}s total`)));
   console.log();
 }
 
-function printCategoryBlock(category: InsightCategory, insights: Insight[]): void {
+function printCategoryBlock(category: InsightCategory, insights: Insight[], _isLastCategory: boolean): void {
   const label = CATEGORY_LABELS[category];
-  console.log(chalk.bold(`${label} (${insights.length} insight${insights.length === 1 ? '' : 's'})`));
-  console.log();
+  console.log(step(`${label} (${insights.length})`));
 
-  for (const insight of insights) {
-    printInsight(insight);
+  for (let i = 0; i < insights.length; i++) {
+    printInsight(insights[i], i === insights.length - 1);
   }
+  console.log();
 }
 
-function printInsight(insight: Insight): void {
+function printInsight(insight: Insight, isLast: boolean): void {
   const confPct = Math.round(insight.confidence * 100);
-  const confLabel = confPct >= 80 ? 'HIGH' : confPct >= 60 ? 'MED' : 'LOW';
+  const pLabel = priorityLabel(confPct >= 80 ? 'high' : confPct >= 60 ? 'medium' : 'low');
+  const connector = isLast ? lastSub : substep;
 
-  console.log(`    ${chalk.bold(confLabel)}  ${chalk.bold(String(confPct) + '%')}  ${insight.title}`);
-  console.log(chalk.dim(`                ${insight.description}`));
+  console.log(connector(`${pLabel}  ${color.bold(String(confPct) + '%')}  ${insight.title}`));
+  console.log(treeCont(secondary(insight.description)));
 
   if (insight.evidence.length > 0) {
-    console.log(chalk.dim(`                Evidence:`));
     for (const ev of insight.evidence) {
-      const roleTag = ev.role === 'user' ? '[USER]' : '[ASSISTANT]';
+      const roleTag = ev.role === 'user' ? '[USER]' : '[ASST]';
       const text = ev.text.length > 80 ? ev.text.slice(0, 77) + '...' : ev.text;
-      console.log(chalk.dim(`                  ${roleTag} "${text}"`));
+      console.log(treeCont(tertiary(`${roleTag} "${text}"`)));
     }
   }
 
   if (insight.suggestedRule) {
-    console.log(`                Suggested rule: ${insight.suggestedRule}`);
+    console.log(treeCont(`${icon.arrow} ${insight.suggestedRule}`));
   }
+}
 
-  console.log(chalk.dim(`                Action: ${insight.actionHint}`));
+function printCrossPatternsBlock(patterns: CrossSessionPattern[]): void {
+  console.log(step(`Cross-session patterns (${patterns.length})`));
+
+  for (let i = 0; i < patterns.length; i++) {
+    printCrossPattern(patterns[i], i === patterns.length - 1);
+  }
   console.log();
 }
 
-function printCrossPattern(pattern: CrossSessionPattern): void {
+function printCrossPattern(pattern: CrossSessionPattern, isLast: boolean): void {
   const confPct = Math.round(pattern.confidence * 100);
   const sessionCount = pattern.occurrences.length;
+  const connector = isLast ? lastSub : substep;
 
-  console.log(`    ${chalk.bold(String(confPct) + '%')}  ${pattern.title}`);
-  console.log(chalk.dim(`          ${pattern.description}`));
-  console.log(chalk.dim(`          Sessions: ${sessionCount}`));
+  console.log(connector(`${color.bold(String(confPct) + '%')}  ${pattern.title} ${secondary(`(${sessionCount} sessions)`)}`));
+  console.log(treeCont(secondary(pattern.description)));
 
   if (pattern.suggestedRule) {
-    console.log(`          Suggested rule: ${pattern.suggestedRule}`);
+    console.log(treeCont(`${icon.arrow} ${pattern.suggestedRule}`));
   }
-  console.log();
 }
 
 export function printAnalysisSummaryLine(
@@ -375,71 +389,91 @@ export function printAnalysisSummaryLine(
   alreadyAnalyzed: number,
   projectPath: string,
 ): void {
-  console.log(`Analyzing project: ${projectPath}`);
-  const skipMsg = alreadyAnalyzed > 0 ? ` (${alreadyAnalyzed} already analyzed, skipped)` : '';
-  console.log(`Sessions to analyze: ${chalk.bold(String(toAnalyze))}${skipMsg}`);
-  console.log();
+  const skipMsg = alreadyAnalyzed > 0 ? secondary(` (${alreadyAnalyzed} already analyzed, skipped)`) : '';
+  console.log(substep(`Project: ${shortPath(projectPath)}`));
+  console.log(substep(`Sessions to analyze: ${color.bold(String(toAnalyze))}${skipMsg}`));
 }
 
 export function printDryRun(sessionId: string, userMessages: number, reason: string): void {
-  const shortId = sessionId.slice(0, 12);
-  console.log(chalk.dim(`  [dry-run] Would analyze ${shortId} (${userMessages} user msgs) \u2014 ${reason}`));
+  const shortId = sessionId.slice(0, 8);
+  console.log(substep(secondary(`[dry-run] Would analyze ${shortId} (${userMessages} user msgs) ${icon.dash} ${reason}`)));
 }
 
 export function printNothingToAnalyze(): void {
-  console.log(chalk.dim('Nothing new to analyze. Run with --force to re-analyze.'));
+  console.log(lastSub(secondary('Nothing new to analyze. Run with --force to re-analyze.')));
   console.log();
 }
 
 // === Rules Reader output ===
 
-export function printRulesHeader(): void {
-  console.log(
-    chalk.green(`==> `) + chalk.bold(`ContextLinter Rules Reader v${VERSION}`),
-  );
+export function printRulesHeader(projectRoot?: string): void {
+  for (const line of buildBanner('Rules', projectRoot)) {
+    console.log(line);
+  }
   console.log();
 }
 
 export function printRulesOverview(snapshot: RulesSnapshot): void {
-  console.log(`Project root: ${chalk.dim(snapshot.projectRoot)}`);
-  console.log();
-
   if (snapshot.files.length === 0) {
-    console.log(chalk.dim('No rules files found. This project has no CLAUDE.md or .claude/rules/.'));
+    console.log(secondary('No rules files found. This project has no CLAUDE.md or .claude/rules/.'));
+    console.log(secondary('Tip: Run "claude /init" in this directory to set up CLAUDE.md.'));
     console.log();
     return;
   }
 
-  console.log(chalk.bold(`Rules files found: ${snapshot.files.length}`));
-  console.log();
-
-  for (const file of snapshot.files) {
+  // Files
+  console.log(step(`Rules files: ${snapshot.files.length}`));
+  for (let i = 0; i < snapshot.files.length; i++) {
+    const file = snapshot.files[i];
     const name = file.relativePath.padEnd(35);
     const scope = file.scope.padEnd(14);
     const ruleCount = `${file.rules.length} rule${file.rules.length === 1 ? '' : 's'}`.padEnd(10);
     const size = formatFileSize(file.sizeBytes);
-    console.log(`  ${name} ${chalk.dim('|')} ${scope} ${chalk.dim('|')} ${ruleCount} ${chalk.dim('|')} ${size}`);
+    const line = `${filePath(name)} ${tertiary('|')} ${scope} ${tertiary('|')} ${ruleCount} ${tertiary('|')} ${size}`;
+    if (i === snapshot.files.length - 1) {
+      console.log(lastSub(line));
+    } else {
+      console.log(substep(line));
+    }
   }
+  // Large-file warnings (between files and stats)
+  const largeFiles = snapshot.files.filter((f) => f.content.split('\n').length > 500);
+  if (largeFiles.length > 0) {
+    console.log();
+    for (const file of largeFiles) {
+      const lineCount = file.content.split('\n').length;
+      console.log(warn(`${file.relativePath} is very large (${lineCount} lines). Consider splitting into .claude/rules/.`));
+    }
+  }
+
   console.log();
 
   // Stats
   const { stats } = snapshot;
-  console.log(chalk.bold('Stats'));
-  console.log();
-  console.log(`  Total rules:    ${chalk.bold(String(stats.totalRules))}`);
-  console.log(`  By scope:       ${stats.byScope.global} global, ${stats.byScope.project} project, ${stats.byScope.project_local} local, ${stats.byScope.subdirectory} subdir`);
-  console.log(`  By format:      ${stats.byFormat.bullet_point} bullet, ${stats.byFormat.paragraph} paragraph, ${stats.byFormat.command} command, ${stats.byFormat.emphatic} emphatic`);
+  const statLines: string[] = [];
+  statLines.push(`Total rules: ${color.bold(String(stats.totalRules))}`);
+  statLines.push(`By scope: ${stats.byScope.global} global, ${stats.byScope.project} project, ${stats.byScope.project_local} local, ${stats.byScope.subdirectory} subdir`);
+  statLines.push(`By format: ${stats.byFormat.bullet_point} bullet, ${stats.byFormat.paragraph} paragraph, ${stats.byFormat.command} command, ${stats.byFormat.emphatic} emphatic`);
 
   if (stats.importCount > 0) {
     const importPaths = snapshot.files
       .flatMap((f) => f.imports)
       .map((imp) => `@${imp.path}`);
-    console.log(`  Imports:        ${stats.importCount} (${importPaths.join(', ')})`);
+    statLines.push(`Imports: ${stats.importCount} (${importPaths.join(', ')})`);
   }
 
   const emphaticCount = snapshot.allRules.filter((r) => r.emphasis === 'important').length;
   if (emphaticCount > 0) {
-    console.log(`  Emphasis:       ${emphaticCount} rules with IMPORTANT/MUST/NEVER`);
+    statLines.push(`Emphasis: ${emphaticCount} rules with IMPORTANT/MUST/NEVER`);
+  }
+
+  console.log(step('Stats'));
+  for (let i = 0; i < statLines.length; i++) {
+    if (i === statLines.length - 1) {
+      console.log(lastSub(statLines[i]));
+    } else {
+      console.log(substep(statLines[i]));
+    }
   }
   console.log();
 }
@@ -451,11 +485,11 @@ export function printRulesDetailed(snapshot: RulesSnapshot): void {
 }
 
 function printRulesFileDetail(file: RulesFile): void {
-  console.log(chalk.bold(`${file.relativePath} (${file.scope}, ${file.rules.length} rule${file.rules.length === 1 ? '' : 's'})`));
+  console.log(color.bold(`${filePath(file.relativePath)} (${file.scope}, ${file.rules.length} rule${file.rules.length === 1 ? '' : 's'})`));
   console.log();
 
   if (file.rules.length === 0) {
-    console.log(chalk.dim('  (no rules parsed)'));
+    console.log(secondary('  (no rules parsed)'));
     console.log();
     return;
   }
@@ -467,18 +501,17 @@ function printRulesFileDetail(file: RulesFile): void {
       currentSection = rule.section;
       if (currentSection) {
         const sectionRules = file.rules.filter((r) => r.section === currentSection);
-        console.log(chalk.bold(`  ## ${currentSection} (${sectionRules.length} rules)`));
+        console.log(color.bold(`  ## ${currentSection} (${sectionRules.length} rules)`));
       }
     }
 
-    const lineRef = chalk.dim(`[L${rule.lineStart}]`);
+    const lineRef = tertiary(`[L${rule.lineStart}]`);
     const emphasisTag = rule.emphasis === 'important' ? 'IMPORTANT ' : '';
 
     const textPreview = rule.text.length > 100
       ? rule.text.slice(0, 97) + '...'
       : rule.text;
 
-    // Replace newlines with spaces for display
     const displayText = textPreview.replace(/\n/g, ' ');
 
     console.log(`    ${lineRef} ${emphasisTag}"${displayText}"`);
@@ -488,15 +521,15 @@ function printRulesFileDetail(file: RulesFile): void {
 }
 
 export function printRulesFileLargeWarning(path: string, lineCount: number): void {
-  console.log(chalk.yellow(`Warning: ${path} is very large (${lineCount} lines). Consider splitting into .claude/rules/.`));
+  console.log(warn(`${path} is very large (${lineCount} lines). Consider splitting into .claude/rules/.`));
 }
 
 // === Suggestion Generator output ===
 
-export function printSuggesterHeader(): void {
-  console.log(
-    chalk.green(`==> `) + chalk.bold(`ContextLinter Suggestion Generator v${VERSION}`),
-  );
+export function printSuggesterHeader(projectRoot?: string): void {
+  for (const line of buildBanner('Suggest', projectRoot)) {
+    console.log(line);
+  }
   console.log();
 }
 
@@ -508,13 +541,12 @@ export function printSuggestionLoadingSummary(
   fileCount: number,
   filteredOut: number,
 ): void {
-  console.log('Loading data...');
-  console.log(`  Insights: ${chalk.bold(String(insightCount))} (${sessionInsightCount} from sessions, ${crossPatternCount} cross-session patterns)`);
-  console.log(`  Rules: ${chalk.bold(String(ruleCount))} rules across ${fileCount} file${fileCount === 1 ? '' : 's'}`);
+  console.log(step('Generating Suggestions'));
+  console.log(substep(`Insights: ${color.bold(String(insightCount))} (${sessionInsightCount} from sessions, ${crossPatternCount} cross-session patterns)`));
+  console.log(substep(`Rules: ${color.bold(String(ruleCount))} rules across ${fileCount} file${fileCount === 1 ? '' : 's'}`));
   if (filteredOut > 0) {
-    console.log(`  Filtered: ${insightCount} insights (${filteredOut} below confidence threshold)`);
+    console.log(substep(`Filtered: ${insightCount} insights (${filteredOut} below confidence threshold)`));
   }
-  console.log();
 }
 
 export function printSuggestionResults(
@@ -523,11 +555,11 @@ export function printSuggestionResults(
 ): void {
   const { suggestions, stats } = set;
 
-  console.log(chalk.green(`==> `) + chalk.bold(`Suggestions for: ${set.projectPath}`));
+  console.log(step(`Suggestions: ${shortPath(set.projectPath)}`));
   console.log();
 
   if (suggestions.length === 0) {
-    console.log(chalk.dim('No suggestions generated. Rules are up to date.'));
+    console.log(secondary('No suggestions generated. Rules are up to date.'));
     console.log();
     return;
   }
@@ -546,9 +578,9 @@ export function printSuggestionResults(
 
   // Skipped
   if (skipped.length > 0) {
-    console.log(chalk.dim(`  Skipped (${skipped.length}):`));
+    console.log(secondary(`  Skipped (${skipped.length}):`));
     for (const s of skipped) {
-      console.log(chalk.dim(`    "${s.title}" \u2014 ${s.reason}`));
+      console.log(secondary(`    "${s.title}" ${icon.dash} ${s.reason}`));
     }
     console.log();
   }
@@ -560,18 +592,16 @@ export function printSuggestionResults(
   if (stats.byType.remove > 0) typeCounts.push(`${stats.byType.remove} remove`);
   if (stats.byType.consolidate > 0) typeCounts.push(`${stats.byType.consolidate} consolidate`);
 
-  console.log(
-    chalk.green(`==> `) + chalk.bold(`Summary: ${stats.total} suggestion${stats.total === 1 ? '' : 's'} (${typeCounts.join(', ')})`),
-  );
+  console.log(step(`Summary: ${stats.total} suggestion${stats.total === 1 ? '' : 's'} (${typeCounts.join(', ')})`));
   if (stats.insightsSkipped > 0) {
-    console.log(chalk.dim(`    ${stats.insightsSkipped} insights skipped (already covered)`));
+    console.log(substep(secondary(`${stats.insightsSkipped} insights skipped (already covered)`)));
   }
-  console.log(chalk.dim(`    Current rules: ${stats.estimatedRulesAfter - stats.total} \u2192 estimated after: ${stats.estimatedRulesAfter}`));
+  console.log(lastSub(secondary(`Current rules: ${stats.estimatedRulesAfter - stats.total} ${icon.arrow} estimated after: ${stats.estimatedRulesAfter}`)));
   console.log();
 }
 
 function printSuggestionFileGroup(file: string, suggestions: Suggestion[]): void {
-  console.log(chalk.bold(`${file} (${suggestions.length} change${suggestions.length === 1 ? '' : 's'})`));
+  console.log(color.bold(`${filePath(file)} (${suggestions.length} change${suggestions.length === 1 ? '' : 's'})`));
   console.log();
 
   for (const s of suggestions) {
@@ -581,17 +611,16 @@ function printSuggestionFileGroup(file: string, suggestions: Suggestion[]): void
 
 function printSuggestionItem(s: Suggestion): void {
   const confPct = Math.round(s.confidence * 100);
-  const priorityLabel = formatPriorityLabel(s.priority);
+  const pLabel = priorityLabel(s.priority);
   const typeLabel = s.type === 'add' ? 'Add rule' : s.type === 'update' ? 'Update rule' : s.type === 'remove' ? 'Remove rule' : 'Consolidate';
 
-  console.log(`  ${priorityLabel}  ${chalk.bold(String(confPct) + '%')}  ${typeLabel}: ${s.title}`);
-  console.log(chalk.dim(`                ${s.rationale}`));
+  console.log(`  ${pLabel}  ${color.bold(String(confPct) + '%')}  ${typeLabel}: ${s.title}`);
+  console.log(secondary(`                ${s.rationale}`));
 
   if (s.targetSection) {
-    console.log(chalk.dim(`                Section: ## ${s.targetSection}`));
+    console.log(secondary(`                Section: ## ${s.targetSection}`));
   }
 
-  // Print diff
   printSuggestionDiff(s);
 
   console.log();
@@ -601,16 +630,15 @@ function printSuggestionDiff(s: Suggestion): void {
   const { diff } = s;
 
   if (diff.parts && diff.parts.length > 0) {
-    // Consolidation: show each part
     for (const part of diff.parts) {
       if (part.removedLines) {
         for (const line of part.removedLines) {
-          console.log(chalk.red(`                - ${line.content}`));
+          console.log(`                ${diffRemove(line.content)}`);
         }
       }
       if (part.addedLines) {
         for (const line of part.addedLines) {
-          console.log(chalk.green(`                + ${line.content}`));
+          console.log(`                ${diffAdd(line.content)}`);
         }
       }
     }
@@ -619,48 +647,35 @@ function printSuggestionDiff(s: Suggestion): void {
 
   if (diff.removedLines) {
     for (const line of diff.removedLines) {
-      console.log(chalk.red(`                - ${line.content}`));
+      console.log(`                ${diffRemove(line.content)}`);
     }
   }
 
   if (diff.addedLines) {
     for (const line of diff.addedLines) {
-      console.log(chalk.green(`                + ${line.content}`));
+      console.log(`                ${diffAdd(line.content)}`);
     }
-  }
-}
-
-function formatPriorityLabel(priority: string): string {
-  switch (priority) {
-    case 'high':
-      return chalk.bold('HIGH');
-    case 'medium':
-      return chalk.bold('MED ');
-    case 'low':
-      return chalk.bold('LOW ');
-    default:
-      return '    ';
   }
 }
 
 export function printSuggestionGenerating(batchCount?: number): void {
   if (batchCount && batchCount > 1) {
-    console.log(`    Generating suggestions (${batchCount} batches)...`);
+    console.log(substep(`Generating suggestions (${batchCount} batches)...`));
   } else {
-    console.log('    Generating suggestions...');
+    console.log(substep('Generating suggestions...'));
   }
 }
 
 export function printSuggestionBatchProgress(batchIdx: number, batchCount: number): void {
-  console.log(chalk.dim(`    Batch ${batchIdx + 1} of ${batchCount}...`));
+  console.log(substep(secondary(`Batch ${batchIdx + 1} of ${batchCount}...`)));
 }
 
 export function printSuggestionGenerated(count: number, skippedCount: number, durationSec: number): void {
   if (count > 0) {
-    const skippedMsg = skippedCount > 0 ? ` (${skippedCount} insights skipped \u2014 already covered)` : '';
-    console.log(chalk.green(`  \u2713 ${count} suggestion${count === 1 ? '' : 's'} generated${skippedMsg}`));
+    const skippedMsg = skippedCount > 0 ? ` (${skippedCount} skipped ${icon.dash} already covered)` : '';
+    console.log(success(`${count} suggestion${count === 1 ? '' : 's'}${skippedMsg}`));
   } else {
-    console.log(chalk.dim(`    No suggestions generated (${durationSec.toFixed(1)}s)`));
+    console.log(lastSub(secondary(`No suggestions generated (${durationSec.toFixed(1)}s)`)));
   }
   console.log();
 }

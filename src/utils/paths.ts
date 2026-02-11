@@ -55,16 +55,21 @@ export function extractSessionId(filename: string): string {
   return filename.replace(/\.jsonl$/, '');
 }
 
-const PROJECT_ROOT_MARKERS = ['.git', 'package.json', 'CLAUDE.md'];
+const PROJECT_ROOT_MARKERS = ['.git', 'package.json', 'CLAUDE.md', '.contextlinter'];
 
 /**
  * Find the project root by walking up from `startDir` looking for marker files/dirs.
- * Returns null if no marker is found before reaching the filesystem root.
+ * Stops at the home directory — never returns $HOME itself as a project root.
+ * Returns null if no marker is found.
  */
 export async function findProjectRoot(startDir: string): Promise<string | null> {
   let current = resolve(startDir);
+  const home = homedir();
 
   while (true) {
+    // Don't treat home directory as a project root
+    if (current === home) return null;
+
     for (const marker of PROJECT_ROOT_MARKERS) {
       try {
         await access(join(current, marker));

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1] - 2026-02-11
+
+## [0.2.1] - 2026-02-11
+
+### Added
+- `clinter` as a short CLI alias
+
+### Changed
+- Replaced chalk calls with centralized UI theme and formatting system
+- Updated demo gif and removed unused logo
+
 ## [0.2.0] - 2026-02-11
 
 ## [0.2.0] - 2026-02-11

@@ -3,7 +3,6 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
-import chalk from 'chalk';
 import type { CLIOptions, ProjectInfo, SessionInfo } from './session-reader/types.js';
 import type { AnalyzeOptions, AnalysisResult } from './analyzer/types.js';
 import type { SuggestOptions } from './suggester/types.js';
@@ -31,11 +30,9 @@ import {
   printNothingToAnalyze,
   printProjectHeader,
   printRulesDetailed,
-  printRulesFileLargeWarning,
   printRulesHeader,
   printRulesOverview,
   printSessionDetail,
-  printSessionSkipped,
   printSessionsDebugList,
   printSkippedSummary,
   printSessionsTable,
@@ -70,6 +67,10 @@ import { dedupAndRank } from './suggester/dedup.js';
 import { saveSuggestionSet, loadLatestSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
 import { runInteractiveReview } from './applier/interactive.js';
 import { runWatch, type WatchOptions } from './watcher.js';
+import { brand, color } from './ui/theme.js';
+import { step, substep, success, secondary, tertiary, treeCont, lastSub, shortPath } from './ui/format.js';
+import { buildBanner } from './ui/banner.js';
+
 
 interface RulesOptions {
   project: string | undefined;
@@ -89,9 +90,9 @@ interface ParsedCLI {
 
 function printHelp(): void {
   console.log(`
-${chalk.bold('contextlinter')} <command> [options]
+${brand.emerald('contextlinter')} <command> [options]
 
-${chalk.bold('Commands:')}
+${color.bold('Commands:')}
   run        Full pipeline: analyze → suggest → apply
   analyze    Analyze Claude Code sessions for insights
   suggest    Generate rule suggestions from insights
@@ -100,7 +101,7 @@ ${chalk.bold('Commands:')}
   rules      Show current rules overview
   init       Create slash command file
 
-${chalk.bold('Options:')}
+${color.bold('Options:')}
   --limit N          Analyze only N newest sessions
   --min-messages N   Minimum user messages to analyze (default: 2)
   --model <model>    LLM model: sonnet (default), opus, haiku
@@ -111,12 +112,12 @@ ${chalk.bold('Options:')}
   --verbose          Show detailed output
   --help             Show this help
 
-${chalk.bold('Watch options:')}
+${color.bold('Watch options:')}
   --interval N       Poll interval in seconds (default: 300)
   --cooldown N       Wait before analyzing new session (default: 60)
   --no-suggest       Only analyze, don't generate suggestions
 
-${chalk.bold('Apply options:')}
+${color.bold('Apply options:')}
   --min-confidence N Only apply above confidence threshold
 `.trimEnd());
 }
@@ -293,8 +294,6 @@ async function main(): Promise<void> {
 // === Rules command ===
 
 async function runRules(opts: RulesOptions): Promise<void> {
-  printRulesHeader();
-
   // Determine project root
   const startDir = opts.project ? resolve(opts.project) : process.cwd();
   const projectRoot = await findProjectRoot(startDir);
@@ -303,6 +302,8 @@ async function runRules(opts: RulesOptions): Promise<void> {
     printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
     process.exit(1);
   }
+
+  printRulesHeader(projectRoot);
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -338,14 +339,6 @@ async function runRules(opts: RulesOptions): Promise<void> {
   // Cache it
   await cacheRulesSnapshot(storeDir, snapshot);
 
-  // Warn about large files
-  for (const file of snapshot.files) {
-    const lineCount = file.content.split('\n').length;
-    if (lineCount > 500) {
-      printRulesFileLargeWarning(file.relativePath, lineCount);
-    }
-  }
-
   // Print output
   printRulesOverview(snapshot);
 
@@ -357,21 +350,21 @@ async function runRules(opts: RulesOptions): Promise<void> {
 // === Suggest command ===
 
 async function runSuggest(opts: SuggestOptions): Promise<void> {
-  printSuggesterHeader();
-
-  // Check Claude CLI
-  const cliAvailable = await checkCliAvailable();
-  if (!cliAvailable) {
-    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
-    process.exit(1);
-  }
-
   // Determine project root
   const startDir = opts.project ? resolve(opts.project) : process.cwd();
   const projectRoot = await findProjectRoot(startDir);
 
   if (!projectRoot) {
     printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  printSuggesterHeader(projectRoot);
+
+  // Check Claude CLI
+  const cliAvailable = await checkCliAvailable();
+  if (!cliAvailable) {
+    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
 
@@ -518,9 +511,6 @@ async function runRun(
   suggestOpts: SuggestOptions,
   applyOpts: ApplyOptions,
 ): Promise<void> {
-  console.log(chalk.green('==> ') + chalk.bold('ContextLinter \u2014 Full Pipeline'));
-  console.log();
-
   // Determine project root for store checks between steps
   const startDir = suggestOpts.project ? resolve(suggestOpts.project) : process.cwd();
   const projectRoot = await findProjectRoot(startDir);
@@ -529,6 +519,10 @@ async function runRun(
     printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
     process.exit(1);
   }
+
+  const bannerLines = buildBanner('Full Pipeline', projectRoot);
+  for (const line of bannerLines) console.log(line);
+  console.log();
 
   // Step 1: Analyze
   const analyzeOutput = await runAnalyze(projects, analyzeOpts);
@@ -570,7 +564,10 @@ interface AnalyzeOutput {
 }
 
 async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promise<AnalyzeOutput> {
-  printAnalyzerHeader();
+  const analyzeProjectRoot = opts.project
+    ? await findProjectRoot(resolve(opts.project))
+    : projects[0]?.projectPath;
+  printAnalyzerHeader(analyzeProjectRoot ?? undefined);
 
   // Check Claude CLI
   const cliAvailable = await checkCliAvailable();
@@ -602,7 +599,7 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
 
     // Verbose: show all sessions before filtering
     if (opts.verbose) {
-      printSessionsDebugList(project.sessions, `All sessions for ${project.projectPath}`);
+      printSessionsDebugList(project.sessions, `All sessions for ${shortPath(project.projectPath)}`);
     }
 
     const minMessages = opts.minMessages ?? 2;
@@ -636,16 +633,15 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
 
     // Verbose: show parsed sessions with message counts before filtering
     if (opts.verbose) {
-      console.log(chalk.dim(`    Parsed sessions (${parsed.length}):`));
+      console.log(treeCont(tertiary(`Parsed sessions (${parsed.length}):`)));
       for (const s of parsed) {
-        const shortId = s.sessionId.slice(0, 12);
+        const shortId = s.sessionId.slice(0, 8);
         const date = s.firstTimestamp
           ? new Date(s.firstTimestamp).toISOString().slice(0, 16).replace('T', ' ')
           : '?';
         const msgs = `${s.userMessageCount} user / ${s.assistantMessageCount} asst`;
-        console.log(chalk.dim(`             Session ${shortId} | ${date} | ${msgs} | ${s.projectPath}`));
+        console.log(treeCont(tertiary(`  ${shortId} | ${date} | ${msgs} | ${shortPath(s.projectPath)}`)));
       }
-      console.log();
     }
 
     // Filter out short sessions first, then apply --limit
@@ -655,16 +651,20 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
     for (const session of parsed) {
       if (!isSessionAnalyzable(session, minMessages)) {
         skippedCount++;
-        if (opts.verbose) printSessionSkipped(session.sessionId, `too short (<${minMessages} user messages)`);
         continue;
       }
       analyzable.push(session);
     }
 
+    // Always show skipped summary (verbose already has full session list above)
+    if (skippedCount > 0) {
+      printSkippedSummary(skippedCount);
+    }
+
     // Apply --limit after filtering: take N newest from analyzable sessions
     const limited = opts.limit ? analyzable.slice(0, opts.limit) : analyzable;
     if (opts.limit && opts.verbose) {
-      console.log(chalk.dim(`    After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`));
+      console.log(treeCont(tertiary(`After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`)));
     }
 
     // Determine which sessions need analysis
@@ -682,17 +682,14 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
       }
     }
 
-    if (!opts.verbose && skippedCount > 0) {
-      printSkippedSummary(skippedCount, minMessages);
-    }
-
     if (toAnalyze.length === 0 && alreadyAnalyzed > 0) {
       printNothingToAnalyze();
       continue;
     }
 
     if (toAnalyze.length === 0) {
-      if (opts.verbose) printVerbose('No analyzable sessions found.');
+      console.log(lastSub(secondary('No analyzable sessions found.')));
+      console.log();
       continue;
     }
 
@@ -749,7 +746,8 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
       audit = markSessionAnalyzed(audit, session.sessionId, promptVersion, result.insights.length);
       await saveAuditLog(storeDir, audit);
 
-      printAnalysisDone(result.insights.length, result.stats.analysisTimeMs / 1000);
+      const hasMoreWork = i < toAnalyze.length - 1 || (!opts.noCross && toAnalyze.length >= 2);
+      printAnalysisDone(result.insights.length, result.stats.analysisTimeMs / 1000, !hasMoreWork);
 
       // Rate limiting: 1s delay between calls (except last)
       if (i < toAnalyze.length - 1) {
@@ -763,10 +761,8 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
     if (!opts.noCross && results.length >= 2) {
       const allInsights = results.flatMap((r) => r.insights);
       if (allInsights.length > 0) {
-        console.log();
-        if (opts.verbose) {
-          printVerbose(`Cross-session synthesis (${allInsights.length} insights from ${results.length} sessions)...`);
-        }
+        const crossText = `Cross-session synthesis (${allInsights.length} insights from ${results.length} sessions)...`;
+        console.log(substep(crossText));
 
         crossPatterns = await synthesizeCrossSessions(results, project.projectPath, opts.verbose, opts.model as ModelName | undefined);
 
@@ -776,14 +772,14 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
           await saveAuditLog(storeDir, audit);
 
           console.log(
-            chalk.green(`  \u2713 ${crossPatterns.length} cross-session pattern${crossPatterns.length === 1 ? '' : 's'} found`),
+            success(`${crossPatterns.length} cross-session pattern${crossPatterns.length === 1 ? '' : 's'} found`),
           );
         }
       }
     }
 
     console.log();
-    printInsightResults(results, crossPatterns, project.projectPath);
+    printInsightResults(results, crossPatterns);
 
     // Accumulate IDs for the caller (used by run pipeline to scope suggest)
     allInsightIds.push(...results.flatMap((r) => r.insights.map((i) => i.id)));
@@ -897,22 +893,23 @@ async function runList(projects: ProjectInfo[], opts: CLIOptions): Promise<void>
 // === Apply command ===
 
 async function runApply(opts: ApplyOptions): Promise<void> {
-  console.log(chalk.green('==> ') + chalk.bold('ContextLinter \u2014 Apply Suggestions'));
-  console.log();
-
-  // Check Claude CLI (needed for --full pipeline)
-  const cliAvailable = await checkCliAvailable();
-  if (!cliAvailable) {
-    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
-    process.exit(1);
-  }
-
   // Determine project root
   const startDir = opts.project ? resolve(opts.project) : process.cwd();
   const projectRoot = await findProjectRoot(startDir);
 
   if (!projectRoot) {
     printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    process.exit(1);
+  }
+
+  const applyBanner = buildBanner('Apply', projectRoot);
+  for (const line of applyBanner) console.log(line);
+  console.log();
+
+  // Check Claude CLI (needed for --full pipeline)
+  const cliAvailable = await checkCliAvailable();
+  if (!cliAvailable) {
+    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
 
@@ -926,7 +923,7 @@ async function runApply(opts: ApplyOptions): Promise<void> {
   const existingSuggestions = await loadLatestSuggestionSet(storeDir);
   if (opts.full || !existingSuggestions) {
     if (!existingSuggestions && !opts.full) {
-      console.log(chalk.dim('No existing suggestions found. Running full pipeline...'));
+      console.log(secondary('No existing suggestions found. Running full pipeline...'));
       console.log();
     }
 
@@ -964,13 +961,7 @@ async function runApply(opts: ApplyOptions): Promise<void> {
 // === Init command ===
 
 async function runInit(opts: ApplyOptions): Promise<void> {
-  const startDir = opts.project ? resolve(opts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
-
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
-  }
+  const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
   const commandDir = join(projectRoot, '.claude', 'commands');
   const commandPath = join(commandDir, 'contextlinter.md');
@@ -984,34 +975,30 @@ async function runInit(opts: ApplyOptions): Promise<void> {
     template = await readFile(templatePath, 'utf-8');
   } catch {
     // Fallback: generate inline
-    template = generateSlashCommandTemplate(contextlinterRoot);
+    template = generateSlashCommandTemplate();
   }
-
-  // Replace the hardcoded path with the actual contextlinter path
-  const contextlinterSrcIndex = join(dirname(contextlinterRoot), 'src', 'index.ts');
-  template = template.replace(
-    /npx tsx \/[^\s]+\/src\/index\.ts/g,
-    `npx tsx ${contextlinterSrcIndex}`,
-  );
 
   await mkdir(commandDir, { recursive: true });
   await writeFile(commandPath, template, 'utf-8');
 
-  console.log(chalk.green(`\u2713 Created ${commandPath}`));
+  for (const line of buildBanner('Init', projectRoot)) {
+    console.log(line);
+  }
   console.log();
-  console.log(chalk.dim('You can now use /contextlinter in Claude Code to run the analysis pipeline.'));
+  console.log(step('Initialize Slash Command'));
+  console.log(success(`Created ${commandPath}`, false));
+  console.log(lastSub(secondary('You can now use /contextlinter in Claude Code to run the analysis pipeline.')));
   console.log();
 }
 
-function generateSlashCommandTemplate(srcDir: string): string {
-  const indexPath = join(srcDir, 'index.ts');
+function generateSlashCommandTemplate(): string {
   return `Run the ContextLinter analysis pipeline to suggest improvements to this project's rules files.
 
 ## Steps
 
 1. Run the ContextLinter CLI to generate suggestions:
    \`\`\`bash
-   npx tsx ${indexPath} suggest --full --limit 10 --verbose
+   npx contextlinter suggest --full --limit 10 --verbose
    \`\`\`
 
 2. Read the latest suggestion set from \`.contextlinter/suggestions/\` (most recent JSON file).

@@ -59,7 +59,6 @@ export async function synthesizeCrossSessions(
   });
 
   if (verbose) {
-    printVerbose(`Cross-session synthesis: ${allInsights.length} insights from ${results.length} sessions`);
     printVerbose('Calling Claude CLI...');
   }
 

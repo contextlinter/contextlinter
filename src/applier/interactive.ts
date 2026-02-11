@@ -1,11 +1,24 @@
 import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
-import chalk from 'chalk';
 import type { Suggestion } from '../suggester/types.js';
 import type { ApplyAction, ApplyOptions, ApplyResult, ApplySession, RulesHistoryEntry } from './types.js';
 import { applySuggestion, getContentPreview, resetBackupTracking } from './file-writer.js';
 import { appendHistoryEntry, buildHistoryEntry } from './history.js';
 import { invalidateRulesCache } from '../store/rules-cache.js';
+import { brand, color, icon } from '../ui/theme.js';
+import {
+  step,
+  substep,
+  lastSub,
+  success,
+  warn,
+  secondary,
+  filePath,
+  treeCont,
+  diffAdd,
+  diffRemove,
+  priorityLabel,
+} from '../ui/format.js';
 
 interface InteractiveContext {
   suggestions: Suggestion[];
@@ -82,11 +95,11 @@ export async function runInteractiveReview(
       const s = suggestions[i];
       if (s.confidence >= options.minConfidence) {
         printSuggestionCard(s, i, suggestions.length);
-        console.log(chalk.dim(`  Auto-accepting (confidence ${Math.round(s.confidence * 100)}% >= ${Math.round(options.minConfidence * 100)}%)`));
+        console.log(secondary(`  Auto-accepting (confidence ${Math.round(s.confidence * 100)}% >= ${Math.round(options.minConfidence * 100)}%)`));
         await applyAndRecord(ctx, s, 'accept', historyPath);
       } else {
         printSuggestionCard(s, i, suggestions.length);
-        console.log(chalk.dim(`  Skipping (confidence ${Math.round(s.confidence * 100)}% < ${Math.round(options.minConfidence * 100)}%)`));
+        console.log(secondary(`  Skipping (confidence ${Math.round(s.confidence * 100)}% < ${Math.round(options.minConfidence * 100)}%)`));
         ctx.results.push({
           suggestionId: s.id,
           action: 'skip',
@@ -112,7 +125,7 @@ export async function runInteractiveReview(
     sigintReceived = true;
     ctx.aborted = true;
     console.log();
-    console.log(chalk.yellow('\nInterrupted. Saving accepted changes...'));
+    console.log(warn('Interrupted. Saving accepted changes...'));
     rl.close();
   };
   process.on('SIGINT', sigintHandler);
@@ -153,6 +166,11 @@ export async function runInteractiveReview(
         await applyAndRecord(ctx, suggestion, 'accept', historyPath);
       } else {
         // reject or skip
+        if (action === 'reject') {
+          console.log(lastSub(secondary('Rejected')));
+        } else {
+          console.log(lastSub(secondary('Skipped')));
+        }
         ctx.results.push({
           suggestionId: suggestion.id,
           action,
@@ -189,10 +207,10 @@ async function applyAndRecord(
   if (result.success) {
     if (result.action === 'created') {
       ctx.filesCreated.add(result.filePath);
-      console.log(chalk.green(`  \u2713 Created ${suggestion.targetFile}`));
+      console.log(success(`Created ${filePath(suggestion.targetFile)}`));
     } else {
       ctx.filesModified.add(result.filePath);
-      console.log(chalk.green(`  \u2713 Updated ${suggestion.targetFile}`));
+      console.log(success(`Updated ${filePath(suggestion.targetFile)}`));
     }
 
     // Update counters
@@ -204,7 +222,6 @@ async function applyAndRecord(
       ctx.rulesAdded++;
     } else if (suggestion.type === 'split') {
       ctx.rulesSplit++;
-      // The split target file was created by the applier
       if (suggestion.splitTarget) {
         const splitPath = join(ctx.projectRoot, suggestion.splitTarget);
         ctx.filesCreated.add(splitPath);
@@ -217,7 +234,7 @@ async function applyAndRecord(
         (l) => l.content.startsWith('- ') || l.content.startsWith('* '),
       );
       if (ruleLines.length > 1) {
-        ctx.rulesAdded += ruleLines.length - 1; // -1 because we already counted 1
+        ctx.rulesAdded += ruleLines.length - 1;
       }
     }
 
@@ -250,7 +267,7 @@ async function applyAndRecord(
       appliedAt: new Date().toISOString(),
     });
   } else {
-    console.log(chalk.yellow(`  Warning: ${result.error}`));
+    console.log(warn(`${result.error}`));
     ctx.results.push({
       suggestionId: suggestion.id,
       action: 'skip',
@@ -266,8 +283,8 @@ async function applyAndRecord(
 function promptAction(rl: ReturnType<typeof createInterface>): Promise<ApplyAction> {
   return new Promise((resolve) => {
     console.log();
-    const prompt = '[a]ccept  [r]eject  [e]dit  [s]kip  [q]uit all';
-    process.stdout.write(prompt + '\n> ');
+    const prompt = secondary('[a]ccept  [r]eject  [e]dit  [s]kip  [q]uit all');
+    process.stdout.write(prompt + '\n' + brand.emerald('> '));
 
     rl.once('line', (input) => {
       const key = input.trim().toLowerCase();
@@ -301,11 +318,11 @@ function promptEdit(
     console.log();
     console.log('  Current content:');
     for (const line of currentContent.split('\n')) {
-      console.log(chalk.dim(`    ${line}`));
+      console.log(secondary(`    ${line}`));
     }
     console.log();
     console.log('  Enter new content (empty line to finish, "cancel" to skip):');
-    process.stdout.write('  > ');
+    process.stdout.write('  ' + brand.emerald('> '));
 
     const lines: string[] = [];
 
@@ -321,7 +338,7 @@ function promptEdit(
         return;
       }
       lines.push(input);
-      process.stdout.write('  > ');
+      process.stdout.write('  ' + brand.emerald('> '));
     };
 
     rl.on('line', onLine);
@@ -332,17 +349,17 @@ function promptEdit(
 
 function printReviewHeader(): void {
   console.log();
-  console.log(chalk.green('==> ') + chalk.bold('Review Suggestions'));
+  console.log(step('Review Suggestions'));
   console.log();
 }
 
 function printSuggestionCard(suggestion: Suggestion, index: number, total: number): void {
   const confPct = Math.round(suggestion.confidence * 100);
-  const priorityLabel = formatPriority(suggestion.priority);
-  const counter = chalk.green('==> ') + chalk.bold(`Suggestion ${index + 1}/${total}`);
+  const pLabel = priorityLabel(suggestion.priority);
+  const label = `Suggestion ${index + 1}/${total}`;
+  const counter = step(label);
 
-  console.log(`${counter}${' '.repeat(Math.max(1, 40 - `==> Suggestion ${index + 1}/${total}`.length))}${priorityLabel}  ${chalk.bold(String(confPct) + '%')}`);
-  console.log();
+  console.log(`${counter}${' '.repeat(Math.max(1, 40 - label.length - 2))}${pLabel}  ${color.bold(String(confPct) + '%')}`);
 
   const typeLabel = suggestion.type === 'add' ? 'Add rule to'
     : suggestion.type === 'update' ? 'Update rule in'
@@ -351,21 +368,20 @@ function printSuggestionCard(suggestion: Suggestion, index: number, total: numbe
     : 'Consolidate rules in';
 
   const sectionSuffix = suggestion.targetSection
-    ? ` \u00A7 "${suggestion.targetSection}"`
+    ? ` ${icon.section} "${suggestion.targetSection}"`
     : '';
 
   const splitSuffix = suggestion.type === 'split' && suggestion.splitTarget
-    ? ` \u2192 ${suggestion.splitTarget}`
+    ? ` ${icon.arrow} ${suggestion.splitTarget}`
     : '';
 
-  console.log(`    ${typeLabel} ${suggestion.targetFile}${sectionSuffix}${splitSuffix}`);
-  console.log();
+  console.log(substep(`${typeLabel} ${filePath(suggestion.targetFile)}${sectionSuffix}${splitSuffix}`));
 
   // Show diff content
   printDiffContent(suggestion);
 
   // Rationale
-  console.log(chalk.dim(`    Rationale: ${suggestion.rationale}`));
+  console.log(lastSub(secondary(`Rationale: ${suggestion.rationale}`)));
 }
 
 function printDiffContent(suggestion: Suggestion): void {
@@ -382,19 +398,16 @@ function printDiffContent(suggestion: Suggestion): void {
       const lineRange = firstLine.lineNumber && lastLine.lineNumber
         ? ` (lines ${firstLine.lineNumber}-${lastLine.lineNumber})`
         : '';
-      console.log(chalk.dim(`    Removes from ${suggestion.targetFile}:`));
-      console.log(chalk.red(`    - ${firstLine.content}${lineRange}`));
+      console.log(treeCont(secondary(`Removes from ${suggestion.targetFile}:`)));
+      console.log(treeCont(diffRemove(`${firstLine.content}${lineRange}`)));
     }
 
     if (addPart?.addedLines && suggestion.splitTarget) {
-      console.log();
-      console.log(chalk.dim(`    Creates ${suggestion.splitTarget}:`));
+      console.log(treeCont(secondary(`Creates ${suggestion.splitTarget}:`)));
       for (const line of addPart.addedLines) {
-        console.log(chalk.green(`    + ${line.content}`));
+        console.log(treeCont(diffAdd(line.content)));
       }
     }
-
-    console.log();
     return;
   }
 
@@ -402,40 +415,28 @@ function printDiffContent(suggestion: Suggestion): void {
     for (const part of diff.parts) {
       if (part.removedLines) {
         for (const line of part.removedLines) {
-          console.log(chalk.red(`    - ${line.content}`));
+          console.log(treeCont(diffRemove(line.content)));
         }
       }
       if (part.addedLines) {
         for (const line of part.addedLines) {
-          console.log(chalk.green(`    + ${line.content}`));
+          console.log(treeCont(diffAdd(line.content)));
         }
       }
     }
-    console.log();
     return;
   }
 
   if (diff.removedLines) {
     for (const line of diff.removedLines) {
-      console.log(chalk.red(`    - ${line.content}`));
+      console.log(treeCont(diffRemove(line.content)));
     }
   }
 
   if (diff.addedLines) {
     for (const line of diff.addedLines) {
-      console.log(chalk.green(`    + ${line.content}`));
+      console.log(treeCont(diffAdd(line.content)));
     }
-  }
-
-  console.log();
-}
-
-function formatPriority(priority: string): string {
-  switch (priority) {
-    case 'high': return chalk.bold('HIGH');
-    case 'medium': return chalk.bold('MED');
-    case 'low': return chalk.bold('LOW');
-    default: return '';
   }
 }
 
@@ -447,24 +448,24 @@ function printNoSuggestions(): void {
 
 function printDryRunHeader(): void {
   console.log();
-  console.log(chalk.yellow('[DRY RUN] Preview only \u2014 no files will be modified'));
+  console.log(warn(`[DRY RUN] Preview only ${icon.dash} no files will be modified`));
   console.log();
 }
 
 function printDryRunFooter(count: number): void {
-  console.log(chalk.yellow(`[DRY RUN] ${count} suggestion${count === 1 ? '' : 's'} would be applied. Run without --dry-run to apply.`));
+  console.log(warn(`[DRY RUN] ${count} suggestion${count === 1 ? '' : 's'} would be applied. Run without --dry-run to apply.`));
   console.log();
 }
 
 function printAutoAcceptHeader(): void {
   console.log();
-  console.log(chalk.yellow('Auto-accepting all suggestions (--yes)'));
+  console.log(warn('Auto-accepting all suggestions (--yes)'));
   console.log();
 }
 
 function printMinConfidenceHeader(threshold: number): void {
   console.log();
-  console.log(chalk.yellow(`Auto-accepting suggestions with confidence >= ${Math.round(threshold * 100)}%`));
+  console.log(warn(`Auto-accepting suggestions with confidence >= ${Math.round(threshold * 100)}%`));
   console.log();
 }
 
@@ -474,13 +475,13 @@ function printSummary(ctx: InteractiveContext): void {
   const skipped = ctx.results.filter((r) => r.action === 'skip').length;
 
   console.log();
-  console.log(chalk.green('==> ') + chalk.bold('Summary'));
-  console.log();
-
-  console.log(`    Accepted: ${chalk.bold(String(accepted))}`);
-  console.log(`    Rejected: ${chalk.bold(String(rejected))}`);
+  console.log(step('Summary'));
+  console.log(substep(`Accepted: ${color.bold(String(accepted))}`));
+  if (rejected > 0) {
+    console.log(substep(`Rejected: ${color.bold(String(rejected))}`));
+  }
   if (skipped > 0) {
-    console.log(`    Skipped:  ${chalk.bold(String(skipped))}`);
+    console.log(substep(`Skipped:  ${color.bold(String(skipped))}`));
   }
 
   if (ctx.filesCreated.size > 0) {
@@ -490,7 +491,7 @@ function printSummary(ctx: InteractiveContext): void {
         return rel;
       })
       .join(', ');
-    console.log(`    Files created: ${ctx.filesCreated.size} (${files})`);
+    console.log(substep(`Files created: ${ctx.filesCreated.size} (${filePath(files)})`));
   }
 
   if (ctx.filesModified.size > 0) {
@@ -500,24 +501,22 @@ function printSummary(ctx: InteractiveContext): void {
         return rel;
       })
       .join(', ');
-    console.log(`    Files modified: ${ctx.filesModified.size} (${files})`);
+    console.log(substep(`Files modified: ${ctx.filesModified.size} (${filePath(files)})`));
   }
 
-  if (ctx.rulesAdded > 0) console.log(`    Rules added: ${ctx.rulesAdded}`);
-  if (ctx.rulesUpdated > 0) console.log(`    Rules updated: ${ctx.rulesUpdated}`);
-  if (ctx.rulesRemoved > 0) console.log(`    Rules removed: ${ctx.rulesRemoved}`);
-  if (ctx.rulesSplit > 0) console.log(`    Sections split: ${ctx.rulesSplit}`);
+  if (ctx.rulesAdded > 0) console.log(substep(`Rules added: ${ctx.rulesAdded}`));
+  if (ctx.rulesUpdated > 0) console.log(substep(`Rules updated: ${ctx.rulesUpdated}`));
+  if (ctx.rulesRemoved > 0) console.log(substep(`Rules removed: ${ctx.rulesRemoved}`));
+  if (ctx.rulesSplit > 0) console.log(substep(`Sections split: ${ctx.rulesSplit}`));
 
   if (accepted > 0) {
-    console.log();
-    console.log(chalk.dim(`    History saved to .contextlinter/history.jsonl`));
-    console.log();
-    console.log(chalk.dim(`    Review changes with: git diff`));
+    console.log(substep(secondary('History saved to .contextlinter/history.jsonl')));
+    console.log(lastSub(secondary('Review changes with: git diff')));
   }
 
   if (ctx.aborted) {
     console.log();
-    console.log(chalk.yellow('  (Review was interrupted. Accepted changes were saved.)'));
+    console.log(warn('Review was interrupted. Accepted changes were saved.'));
   }
 
   console.log();

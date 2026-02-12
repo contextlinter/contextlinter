@@ -1,18 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-const CLI_PATH = join(import.meta.dirname, '..', '..', 'dist', 'index.js');
+const CLI_PATH = join(import.meta.dirname, '..', 'index.ts');
+const TSX_PATH = join(import.meta.dirname, '..', '..', 'node_modules', '.bin', 'tsx');
 
 describe('--format flag', () => {
   it('rejects --format with non-run commands', async () => {
     try {
-      await execFileAsync('node', [CLI_PATH, 'analyze', '--format', 'json'], {
+      await execFileAsync(TSX_PATH, [CLI_PATH, 'analyze', '--format', 'json'], {
         timeout: 10_000,
       });
       expect.fail('should have exited with error');
@@ -25,7 +26,7 @@ describe('--format flag', () => {
 
   it('rejects --format with suggest command', async () => {
     try {
-      await execFileAsync('node', [CLI_PATH, 'suggest', '--format', 'json'], {
+      await execFileAsync(TSX_PATH, [CLI_PATH, 'suggest', '--format', 'json'], {
         timeout: 10_000,
       });
       expect.fail('should have exited with error');
@@ -50,7 +51,7 @@ describe('run --format json', () => {
 
   it('outputs JSON error when no project root found', async () => {
     try {
-      await execFileAsync('node', [CLI_PATH, 'run', '--format', 'json'], {
+      await execFileAsync(TSX_PATH, [CLI_PATH, 'run', '--format', 'json'], {
         cwd: tempDir,
         timeout: 10_000,
       });
@@ -66,7 +67,7 @@ describe('run --format json', () => {
 
   it('JSON output contains no ANSI escape codes', async () => {
     try {
-      await execFileAsync('node', [CLI_PATH, 'run', '--format', 'json'], {
+      await execFileAsync(TSX_PATH, [CLI_PATH, 'run', '--format', 'json'], {
         cwd: tempDir,
         timeout: 10_000,
       });
@@ -91,7 +92,8 @@ describe('init command generates correct template', () => {
   });
 
   it('generates slash command with run --format json', async () => {
-    await execFileAsync('node', [CLI_PATH, 'init'], {
+    await writeFile(join(tempDir, 'CLAUDE.md'), '');
+    await execFileAsync(TSX_PATH, [CLI_PATH, 'init'], {
       cwd: tempDir,
       timeout: 10_000,
     });

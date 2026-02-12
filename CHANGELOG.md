@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.3] - 2026-02-12
+
+There are no feature/fix/refactor commits between v0.2.2 and the current state — just a version bump. There's nothing meaningful to put in a changelog entry. 
+
+If you'd like, I can generate a placeholder entry, but it would be empty sections. Or if there are upcoming changes you plan to include in 0.2.3, let me know and I can draft the entry based on those.
+
+If you just want the version header for now:
+
+```markdown
+## [0.2.3] - 2026-02-12
+
+_No changes yet._
+```
+
 ## [0.2.2] - 2026-02-11
 
 ## [0.2.2] - 2026-02-11

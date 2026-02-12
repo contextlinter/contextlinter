@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.4] - 2026-02-12
+
+## [0.2.4] - 2026-02-12
+
+### Added
+- `--format json` output mode for machine-consumable run results
+
+### Fixed
+- Run CLI integration tests via tsx against source instead of dist
+
 ## [0.2.3] - 2026-02-12
 
 There are no feature/fix/refactor commits between v0.2.2 and the current state — just a version bump. There's nothing meaningful to put in a changelog entry. 

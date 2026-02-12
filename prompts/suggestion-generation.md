@@ -13,6 +13,8 @@ You have insights from analyzing their coding sessions and the current state of 
 {{rules_stats}}
 </rules_stats>
 
+{{existing_suggestions_summary}}
+
 ## Insights to address
 
 <insights>
@@ -24,6 +26,8 @@ You have insights from analyzing their coding sessions and the current state of 
 For each insight, decide what change to make:
 
 1. **Check if already covered.** If a rule already addresses this insight, respond with "skip" and explain why.
+
+1b. **Check against already generated suggestions.** If the "Already generated suggestions" section above is present and a suggestion very similar to one listed there would be produced, set "skipped": true and "skipReason": "similar to already generated: <title>".
 
 2. **If not covered, generate a suggestion:**
    - **type**: "add" (new rule), "update" (improve existing rule), "remove" (delete stale rule), "consolidate" (merge related rules), or "split" (move a section to its own file)

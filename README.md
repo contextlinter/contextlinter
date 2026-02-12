@@ -30,18 +30,12 @@ No config files, no API keys. It uses your existing Claude Code CLI to call the 
 Every time you correct Claude Code — "no, use pnpm not npm", "we don't put tests there", "I told you to use the existing helper" — that's a rule waiting to be written. ContextLinter finds those patterns automatically:
 
 1. **Reads** session transcripts from `~/.claude/projects/`
-2. **Analyzes** each conversation for corrections, rejected approaches, repeated clarifications, and established conventions
-3. **Synthesizes** cross-session patterns (things you correct in multiple sessions)
-4. **Generates** precise rule suggestions — adds, updates, removals, or splits of large files
+2. **Analyzes** each conversation for corrections, rejected approaches, repeated clarifications, and established conventions (up to 3 sessions in parallel)
+3. **Generates** rule suggestions per session with incremental dedup, streaming results as they complete
+4. **Synthesizes** cross-session patterns (things you correct in multiple sessions)
 5. **Presents** an interactive review where you accept, reject, or edit each change
 
-The pipeline has three stages that can run independently or together:
-
-```
-analyze → suggest → apply
-```
-
-`run` executes all three. You can also run `analyze`, `suggest`, and `apply` separately if you want more control.
+The `run` command processes sessions one at a time through analyze → suggest, streaming results incrementally. You can also run `analyze`, `suggest`, and `apply` separately if you want more control.
 
 ## What kinds of insights does it find?
 
@@ -102,7 +96,7 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 | `--model <model>` | LLM model: `sonnet` (default), `opus`, `haiku` |
 | `--min-confidence N` | Auto-accept only above this confidence (0.0-1.0) |
 | `--yes` | Auto-confirm all prompts |
-| `--format json` | Output as JSON (for machine/Claude Code consumption) |
+| `--format json` | Output as NDJSON stream (one JSON object per line, for machine/Claude Code consumption) |
 | `--dry-run` | Preview what would happen without writing files |
 | `--verbose` | Show detailed progress and debug info |
 | `--force` | Re-analyze sessions even if already processed |
@@ -143,6 +137,7 @@ src/
 ├── analyzer/         LLM-based session analysis → insights
 ├── rules-reader/     Parse CLAUDE.md and .claude/rules/ files
 ├── suggester/        LLM-based suggestion generation from insights + rules
+├── pipeline/         Per-session orchestrator with parallel analysis
 ├── applier/          Interactive review and file writer
 ├── store/            Persistence (insights, suggestions, cache, audit log)
 └── utils/            Logger, paths, helpers

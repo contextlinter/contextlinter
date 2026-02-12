@@ -18,7 +18,8 @@ function stripAnsi(s: string): string {
  * Example output:
  *   ╭─── ContextLinter v0.2.0 · Analyze ─────────────────────╮
  *   │  Project: ~/work/myproject                              │
- *   │  Sessions: 12 · Model: sonnet                           │
+ *   │  Sessions: 12                                            │
+ *   │  Model: sonnet                                           │
  *   ╰────────────────────────────────────────────────────────╯
  */
 export function buildBanner(
@@ -35,10 +36,9 @@ export function buildBanner(
     contentLines.push(`${color.secondary('Scope:')} ${color.file(shortPath(projectPath))}`);
   }
   if (extra) {
-    const parts = Object.entries(extra).map(
-      ([key, value]) => `${color.secondary(key + ':')} ${value}`,
-    );
-    contentLines.push(parts.join(color.tertiary(' \u00B7 ')));
+    for (const [key, value] of Object.entries(extra)) {
+      contentLines.push(`${color.secondary(key + ':')} ${value}`);
+    }
   }
 
   // Calculate inner width

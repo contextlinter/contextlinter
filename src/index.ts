@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, mkdir, stat, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import type { CLIOptions, ProjectInfo, SessionInfo } from './session-reader/types.js';
@@ -27,16 +27,15 @@ import {
   printError,
   printHeader,
   printInsightResults,
+  printNoRulesFound,
   printNothingToAnalyze,
   printProjectHeader,
   printRulesDetailed,
-  printRulesHeader,
   printRulesOverview,
   printSessionDetail,
   printSessionsDebugList,
   printSkippedSummary,
   printSessionsTable,
-  printSuggesterHeader,
   printSuggestionGenerating,
   printSuggestionGenerated,
   printSuggestionLoadingSummary,
@@ -80,6 +79,7 @@ interface RulesOptions {
 
 interface ParsedCLI {
   command: 'run' | 'list' | 'analyze' | 'session-detail' | 'rules' | 'suggest' | 'apply' | 'init' | 'watch';
+  format: 'json' | undefined;
   options: CLIOptions;
   analyzeOptions: AnalyzeOptions;
   rulesOptions: RulesOptions;
@@ -109,6 +109,7 @@ ${color.bold('Options:')}
   --all              Analyze all projects (default: CWD only)
   --yes              Auto-confirm (skip prompts)
   --dry-run          Preview without applying
+  --format <fmt>     Output format: json (for machine consumption)
   --verbose          Show detailed output
   --help             Show this help
 
@@ -143,6 +144,7 @@ function parseCLIArgs(): ParsedCLI {
       interval: { type: 'string' },
       cooldown: { type: 'string' },
       'no-suggest': { type: 'boolean', default: false },
+      format: { type: 'string' },
       help: { type: 'boolean', default: false },
     },
     strict: false,
@@ -167,6 +169,7 @@ function parseCLIArgs(): ParsedCLI {
 
   return {
     command,
+    format: values.format === 'json' ? 'json' : undefined,
     options: {
       project: values.project as string | undefined,
       all: Boolean(values.all),
@@ -232,6 +235,12 @@ async function main(): Promise<void> {
 
   const cli = parseCLIArgs();
 
+  // Validate --format flag early (before command dispatch)
+  if (cli.format && cli.command !== 'run') {
+    printError('--format is only supported with the "run" command.');
+    process.exit(1);
+  }
+
   // Commands that don't need Claude projects discovery
   if (cli.command === 'rules') {
     await runRules(cli.rulesOptions);
@@ -260,9 +269,13 @@ async function main(): Promise<void> {
 
   let projects = await discoverProjects();
   if (projects.length === 0) {
-    printError(
-      'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/',
-    );
+    if (cli.format === 'json') {
+      console.log(JSON.stringify({ version: 1, error: 'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/' }));
+    } else {
+      printError(
+        'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/',
+      );
+    }
     process.exit(1);
   }
 
@@ -273,15 +286,19 @@ async function main(): Promise<void> {
     const matchPath = projectRoot ?? cwd;
     projects = projects.filter((p) => p.projectPath === matchPath);
     if (projects.length === 0) {
-      printError(
-        `No Claude sessions found for ${matchPath}. Use --all to scan all projects.`,
-      );
+      if (cli.format === 'json') {
+        console.log(JSON.stringify({ version: 1, error: `No Claude sessions found for ${matchPath}. Use --all to scan all projects.` }));
+      } else {
+        printError(
+          `No Claude sessions found for ${matchPath}. Use --all to scan all projects.`,
+        );
+      }
       process.exit(1);
     }
   }
 
   if (cli.command === 'run') {
-    await runRun(projects, cli.analyzeOptions, cli.suggestOptions, cli.applyOptions);
+    await runRun(projects, cli.analyzeOptions, cli.suggestOptions, cli.applyOptions, cli.format);
   } else if (cli.command === 'analyze') {
     await runAnalyze(projects, cli.analyzeOptions);
   } else if (cli.command === 'session-detail') {
@@ -291,19 +308,32 @@ async function main(): Promise<void> {
   }
 }
 
-// === Rules command ===
+// === Shared project resolution ===
 
-async function runRules(opts: RulesOptions): Promise<void> {
-  // Determine project root
+async function resolveProject(
+  commandName: string,
+  opts: { project?: string },
+): Promise<string> {
   const startDir = opts.project ? resolve(opts.project) : process.cwd();
   const projectRoot = await findProjectRoot(startDir);
 
+  for (const line of buildBanner(commandName, projectRoot ?? startDir)) {
+    console.log(line);
+  }
+  console.log();
+
   if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
+    printNoRulesFound();
     process.exit(1);
   }
 
-  printRulesHeader(projectRoot);
+  return projectRoot;
+}
+
+// === Rules command ===
+
+async function runRules(opts: RulesOptions): Promise<void> {
+  const projectRoot = await resolveProject('Rules', opts);
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -358,16 +388,7 @@ async function runRules(opts: RulesOptions): Promise<void> {
 // === Suggest command ===
 
 async function runSuggest(opts: SuggestOptions): Promise<void> {
-  // Determine project root
-  const startDir = opts.project ? resolve(opts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
-
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
-  }
-
-  printSuggesterHeader(projectRoot);
+  const projectRoot = await resolveProject('Suggest', opts);
 
   // Check Claude CLI
   const cliAvailable = await checkCliAvailable();
@@ -518,19 +539,93 @@ async function runRun(
   analyzeOpts: AnalyzeOptions,
   suggestOpts: SuggestOptions,
   applyOpts: ApplyOptions,
+  format?: 'json',
 ): Promise<void> {
-  // Determine project root for store checks between steps
-  const startDir = suggestOpts.project ? resolve(suggestOpts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
+  // JSON output mode: resolve project root without banner
+  if (format === 'json') {
+    const startDir = suggestOpts.project ? resolve(suggestOpts.project) : process.cwd();
+    const projectRoot = await findProjectRoot(startDir);
 
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
+    if (!projectRoot) {
+      console.log(JSON.stringify({ version: 1, error: `Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.` }));
+      process.exit(1);
+    }
+    // Pre-check CLI availability before suppressing output
+    const cliAvailable = await checkCliAvailable();
+    if (!cliAvailable) {
+      console.log(JSON.stringify({ version: 1, error: 'Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code' }));
+      process.exit(1);
+    }
+
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.log = () => {};
+    console.error = () => {};
+    console.warn = () => {};
+
+    try {
+      // Step 1: Analyze (force yes to skip confirmation prompts)
+      const analyzeOutput = await runAnalyze(projects, { ...analyzeOpts, yes: true });
+
+      // Step 2: Check for insights
+      const storeDir = await initStoreDir(projectRoot);
+      const { insights, crossPatterns } = await loadSuggestionInputs(storeDir, projectRoot);
+
+      if (insights.length === 0 && crossPatterns.length === 0) {
+        console.log = originalLog;
+        console.error = originalError;
+        console.warn = originalWarn;
+        console.log(JSON.stringify({
+          version: 1,
+          projectPath: projectRoot,
+          generatedAt: new Date().toISOString(),
+          analysis: { sessionsAnalyzed: 0, insightsFound: 0, crossPatternsFound: 0 },
+          suggestions: [],
+          stats: null,
+        }));
+        return;
+      }
+
+      // Step 3: Suggest
+      const allScopedIds = [...analyzeOutput.insightIds, ...analyzeOutput.crossPatternIds];
+      const scopedInsightIds = allScopedIds.length > 0 ? allScopedIds : undefined;
+      await runSuggest({ ...suggestOpts, full: false, scopedInsightIds });
+
+      // Step 4: Load suggestions and emit JSON
+      const suggestionSet = await loadLatestSuggestionSet(storeDir);
+
+      console.log = originalLog;
+      console.error = originalError;
+      console.warn = originalWarn;
+
+      console.log(JSON.stringify({
+        version: 1,
+        projectPath: projectRoot,
+        generatedAt: new Date().toISOString(),
+        analysis: {
+          sessionsAnalyzed: analyzeOutput.insightIds.length,
+          insightsFound: analyzeOutput.insightIds.length,
+          crossPatternsFound: analyzeOutput.crossPatternIds.length,
+        },
+        suggestions: suggestionSet?.suggestions ?? [],
+        stats: suggestionSet?.stats ?? null,
+      }));
+    } catch (err) {
+      console.log = originalLog;
+      console.error = originalError;
+      console.warn = originalWarn;
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(JSON.stringify({ version: 1, error: message }));
+      process.exit(1);
+    }
+
+    return;
   }
 
-  const bannerLines = buildBanner('Full Pipeline', projectRoot);
-  for (const line of bannerLines) console.log(line);
-  console.log();
+  // === Human-readable output (default) ===
+
+  const projectRoot = await resolveProject('Full Pipeline', suggestOpts);
 
   // Step 1: Analyze
   const analyzeOutput = await runAnalyze(projects, analyzeOpts);
@@ -901,18 +996,7 @@ async function runList(projects: ProjectInfo[], opts: CLIOptions): Promise<void>
 // === Apply command ===
 
 async function runApply(opts: ApplyOptions): Promise<void> {
-  // Determine project root
-  const startDir = opts.project ? resolve(opts.project) : process.cwd();
-  const projectRoot = await findProjectRoot(startDir);
-
-  if (!projectRoot) {
-    printError(`Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.`);
-    process.exit(1);
-  }
-
-  const applyBanner = buildBanner('Apply', projectRoot);
-  for (const line of applyBanner) console.log(line);
-  console.log();
+  const projectRoot = await resolveProject('Apply', opts);
 
   // Check Claude CLI (needed for --full pipeline)
   const cliAvailable = await checkCliAvailable();
@@ -971,72 +1055,78 @@ async function runApply(opts: ApplyOptions): Promise<void> {
 async function runInit(opts: ApplyOptions): Promise<void> {
   const projectRoot = opts.project ? resolve(opts.project) : process.cwd();
 
-  const commandDir = join(projectRoot, '.claude', 'commands');
-  const commandPath = join(commandDir, 'contextlinter.md');
-
-  // Read the template from our own .claude/commands/
-  const contextlinterRoot = dirname(new URL(import.meta.url).pathname);
-  const templatePath = join(contextlinterRoot, '..', '.claude', 'commands', 'contextlinter.md');
-
-  let template: string;
-  try {
-    template = await readFile(templatePath, 'utf-8');
-  } catch {
-    // Fallback: generate inline
-    template = generateSlashCommandTemplate();
-  }
-
-  await mkdir(commandDir, { recursive: true });
-  await writeFile(commandPath, template, 'utf-8');
+  // Check if project has CLAUDE.md or .claude/rules/
+  const hasRules = await hasRulesFiles(projectRoot);
 
   for (const line of buildBanner('Init', projectRoot)) {
     console.log(line);
   }
   console.log();
+
+  if (!hasRules) {
+    printNoRulesFound();
+    process.exit(1);
+  }
+
+  const commandDir = join(projectRoot, '.claude', 'commands');
+  const commandPath = join(commandDir, 'contextlinter.md');
+
+  const template = generateSlashCommandTemplate();
+
+  await mkdir(commandDir, { recursive: true });
+  await writeFile(commandPath, template, 'utf-8');
+
   console.log(step('Initialize Slash Command'));
   console.log(success(`Created ${commandPath}`, false));
   console.log(lastSub(secondary('You can now use /contextlinter in Claude Code to run the analysis pipeline.')));
   console.log();
 }
 
+async function hasRulesFiles(projectRoot: string): Promise<boolean> {
+  try {
+    await access(join(projectRoot, 'CLAUDE.md'));
+    return true;
+  } catch { /* not found */ }
+  try {
+    await access(join(projectRoot, '.claude', 'rules'));
+    return true;
+  } catch { /* not found */ }
+  return false;
+}
+
 function generateSlashCommandTemplate(): string {
-  return `Run the ContextLinter analysis pipeline to suggest improvements to this project's rules files.
+  return `Run the ContextLinter analysis pipeline and interactively apply suggestions to this project's rules files.
 
 ## Steps
 
-1. Run the ContextLinter CLI to generate suggestions:
+1. Run the ContextLinter CLI:
    \`\`\`bash
-   npx contextlinter suggest --full --limit 10 --verbose
+   npx contextlinter run --format json
    \`\`\`
 
-2. Read the latest suggestion set from \`.contextlinter/suggestions/\` (most recent JSON file).
+2. Parse the JSON output. If the output contains an \`error\` field, show it to the user and stop.
 
-3. Review each suggestion and present it to the user with the diff preview, showing:
-   - The suggestion type (add/update/remove/consolidate)
-   - Target file and section
-   - The diff (lines to add/remove)
-   - Confidence level and priority
-   - Rationale
+3. If \`suggestions\` array is empty, tell the user their rules are up to date.
 
-4. For each suggestion, ask the user:
+4. For each suggestion, present it to the user showing:
+   - The suggestion type (\`type\`: add/update/remove/consolidate/split)
+   - Target file (\`targetFile\`) and section (\`targetSection\`)
+   - The diff (\`diff.addedLines\` and \`diff.removedLines\`)
+   - Confidence level (\`confidence\`) and priority (\`priority\`)
+   - Rationale (\`rationale\`)
+
+5. For each suggestion, ask the user:
    - **Accept** — apply this change to the target file
    - **Reject** — skip this suggestion
    - **Edit** — modify the suggested text before applying
 
-5. Apply accepted changes to the appropriate rules files:
+6. Apply accepted changes to the appropriate rules files:
    - For "add" suggestions: create the file if needed, or append to the target section
    - For "update" suggestions: find and replace the old text with new text
    - For "remove" suggestions: find and delete the specified text
-   - Create backup copies before modifying any file
+   - Create parent directories as needed
 
-6. Show a summary of what was changed.
-
-## Notes
-- If no suggestions are generated, tell the user their rules are up to date.
-- Show the confidence level and rationale for each suggestion.
-- When applying changes, create new files if they don't exist yet (e.g., .claude/rules/debugging.md).
-- Create parent directories as needed.
-- After applying, remind the user to review the changes with \`git diff\` and commit if satisfied.
+7. Show a summary of what was changed and remind the user to review with \`git diff\`.
 `;
 }
 

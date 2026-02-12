@@ -1,37 +1,33 @@
-Run the ContextLinter analysis pipeline to suggest improvements to this project's rules files.
+Run the ContextLinter analysis pipeline and interactively apply suggestions to this project's rules files.
 
 ## Steps
 
-1. Run the ContextLinter CLI to generate suggestions:
+1. Run the ContextLinter CLI:
+
    ```bash
-   npx contextlinter suggest --full --limit 10 --verbose
+   npx tsx src/index.ts run --format json
    ```
 
-2. Read the latest suggestion set from `.contextlinter/suggestions/` (most recent JSON file).
+2. Parse the JSON output. If the output contains an `error` field, show it to the user and stop.
 
-3. Review each suggestion and present it to the user with the diff preview, showing:
-   - The suggestion type (add/update/remove/consolidate)
-   - Target file and section
-   - The diff (lines to add/remove)
-   - Confidence level and priority
-   - Rationale
+3. If `suggestions` array is empty, tell the user their rules are up to date.
 
-4. For each suggestion, ask the user:
+4. For each suggestion, present it to the user showing:
+   - The suggestion type (`type`: add/update/remove/consolidate/split)
+   - Target file (`targetFile`) and section (`targetSection`)
+   - The diff (`diff.addedLines` and `diff.removedLines`)
+   - Confidence level (`confidence`) and priority (`priority`)
+   - Rationale (`rationale`)
+
+5. For each suggestion, ask the user:
    - **Accept** — apply this change to the target file
    - **Reject** — skip this suggestion
    - **Edit** — modify the suggested text before applying
 
-5. Apply accepted changes to the appropriate rules files:
+6. Apply accepted changes to the appropriate rules files:
    - For "add" suggestions: create the file if needed, or append to the target section
    - For "update" suggestions: find and replace the old text with new text
    - For "remove" suggestions: find and delete the specified text
-   - Create backup copies before modifying any file
+   - Create parent directories as needed
 
-6. Show a summary of what was changed.
-
-## Notes
-- If no suggestions are generated, tell the user their rules are up to date.
-- Show the confidence level and rationale for each suggestion.
-- When applying changes, create new files if they don't exist yet (e.g., .claude/rules/debugging.md).
-- Create parent directories as needed.
-- After applying, remind the user to review the changes with `git diff` and commit if satisfied.
+7. Show a summary of what was changed and remind the user to review with `git diff`.

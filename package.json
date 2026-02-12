@@ -13,8 +13,7 @@
     "url": "https://github.com/contextlinter/contextlinter/issues"
   },
   "bin": {
-    "contextlinter": "./dist/index.js",
-    "clinter": "./dist/index.js"
+    "contextlinter": "./dist/index.js"
   },
   "files": [
     "dist",

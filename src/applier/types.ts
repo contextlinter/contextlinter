@@ -40,7 +40,4 @@ export interface ApplyOptions {
   yes: boolean;
   dryRun: boolean;
   minConfidence?: number;
-  limit?: number;
-  full: boolean;
-  model?: string;
 }

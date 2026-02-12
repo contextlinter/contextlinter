@@ -85,13 +85,4 @@ export interface LlmSuggestion {
   skipReason: string | null;
 }
 
-export interface SuggestOptions {
-  project?: string;
-  all?: boolean;
-  verbose: boolean;
-  full: boolean;
-  limit?: number;
-  model?: string;
-  /** When set, only process these insight/pattern IDs (used by `run` pipeline). */
-  scopedInsightIds?: string[];
-}
+

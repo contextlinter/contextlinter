@@ -5,7 +5,6 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import type { CLIOptions, ProjectInfo, SessionInfo } from './session-reader/types.js';
 import type { AnalyzeOptions, AnalysisResult } from './analyzer/types.js';
-import type { SuggestOptions } from './suggester/types.js';
 import type { ApplyOptions } from './applier/types.js';
 import {
   discoverProjects,
@@ -22,11 +21,9 @@ import {
   printAnalysisDone,
   printAnalysisSummaryLine,
   printAnalysisProgress,
-  printAnalyzerHeader,
   printDryRun,
   printError,
   printHeader,
-  printInsightResults,
   printNoRulesFound,
   printNothingToAnalyze,
   printProjectHeader,
@@ -36,10 +33,6 @@ import {
   printSessionsDebugList,
   printSkippedSummary,
   printSessionsTable,
-  printSuggestionGenerating,
-  printSuggestionGenerated,
-  printSuggestionLoadingSummary,
-  printSuggestionResults,
   printSummary,
   printVerbose,
   printWarning,
@@ -49,23 +42,18 @@ import { cacheSession, getCachedSession } from './store/session-cache.js';
 import { cacheRulesSnapshot, getCachedRulesSnapshot } from './store/rules-cache.js';
 import {
   loadAuditLog,
-  markCrossSessionDone,
-  markSessionAnalyzed,
   markSessionParsed,
   needsAnalysis,
   saveAuditLog,
 } from './store/audit.js';
-import { saveAnalysisResult, saveCrossSessionPatterns } from './store/analysis-store.js';
+import { loadAnalysisResult } from './store/analysis-store.js';
 import { checkCliAvailable, getPromptVersion, type ModelName } from './analyzer/llm-client.js';
-import { analyzeSingleSession } from './analyzer/single-session.js';
-import { synthesizeCrossSessions } from './analyzer/cross-session.js';
 import { isSessionAnalyzable } from './analyzer/preparer.js';
-import { loadSuggestionInputs } from './suggester/loader.js';
-import { generateSuggestions, computeSuggestionCacheKey } from './suggester/generator.js';
-import { dedupAndRank } from './suggester/dedup.js';
-import { saveSuggestionSet, loadLatestSuggestionSet, findSuggestionSetByCacheKey } from './store/suggestion-store.js';
+import { loadLatestSuggestionSet } from './store/suggestion-store.js';
 import { runInteractiveReview } from './applier/interactive.js';
 import { runWatch, type WatchOptions } from './watcher.js';
+import { runPerSessionPipeline } from './pipeline/per-session.js';
+import type { SessionPipelineResult } from './pipeline/types.js';
 import { brand, color } from './ui/theme.js';
 import { step, substep, success, secondary, tertiary, treeCont, lastSub, shortPath } from './ui/format.js';
 import { buildBanner } from './ui/banner.js';
@@ -78,12 +66,10 @@ interface RulesOptions {
 }
 
 interface ParsedCLI {
-  command: 'run' | 'list' | 'analyze' | 'session-detail' | 'rules' | 'suggest' | 'apply' | 'init' | 'watch';
-  format: 'json' | undefined;
+  command: 'list' | 'analyze' | 'session-detail' | 'rules' | 'review' | 'init' | 'watch';
   options: CLIOptions;
   analyzeOptions: AnalyzeOptions;
   rulesOptions: RulesOptions;
-  suggestOptions: SuggestOptions;
   applyOptions: ApplyOptions;
   watchOptions: WatchOptions;
 }
@@ -93,15 +79,15 @@ function printHelp(): void {
 ${brand.emerald('contextlinter')} <command> [options]
 
 ${color.bold('Commands:')}
-  run        Full pipeline: analyze → suggest → apply
-  analyze    Analyze Claude Code sessions for insights
-  suggest    Generate rule suggestions from insights
-  apply      Review and apply suggestions interactively
+  analyze    Analyze sessions and generate rule suggestions
+  review     Review and apply suggestions interactively
+  list       Show analyzed sessions
   watch      Monitor for new sessions and auto-analyze
   rules      Show current rules overview
   init       Create slash command file
 
 ${color.bold('Options:')}
+  --session <id>     Show details for a specific session
   --limit N          Analyze only N newest sessions
   --min-messages N   Minimum user messages to analyze (default: 2)
   --model <model>    LLM model: sonnet (default), opus, haiku
@@ -109,16 +95,14 @@ ${color.bold('Options:')}
   --all              Analyze all projects (default: CWD only)
   --yes              Auto-confirm (skip prompts)
   --dry-run          Preview without applying
-  --format <fmt>     Output format: json (for machine consumption)
   --verbose          Show detailed output
-  --help             Show this help
 
 ${color.bold('Watch options:')}
   --interval N       Poll interval in seconds (default: 300)
   --cooldown N       Wait before analyzing new session (default: 60)
   --no-suggest       Only analyze, don't generate suggestions
 
-${color.bold('Apply options:')}
+${color.bold('Review options:')}
   --min-confidence N Only apply above confidence threshold
 `.trimEnd());
 }
@@ -136,7 +120,6 @@ function parseCLIArgs(): ParsedCLI {
       'no-cross': { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       list: { type: 'boolean', default: false },
-      full: { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false },
       'min-confidence': { type: 'string' },
       'min-messages': { type: 'string' },
@@ -144,32 +127,27 @@ function parseCLIArgs(): ParsedCLI {
       interval: { type: 'string' },
       cooldown: { type: 'string' },
       'no-suggest': { type: 'boolean', default: false },
-      format: { type: 'string' },
-      help: { type: 'boolean', default: false },
     },
     strict: false,
     allowPositionals: true,
   });
 
-  if (values.help || (!positionals.length && !values.session)) {
+  if (!positionals.length && !values.session) {
     printHelp();
     process.exit(0);
   }
 
   const cmd = positionals[0];
-  const command = cmd === 'run' ? 'run'
-    : cmd === 'analyze' ? 'analyze'
-    : cmd === 'rules' ? 'rules'
-    : cmd === 'suggest' ? 'suggest'
-    : cmd === 'apply' ? 'apply'
-    : cmd === 'watch' ? 'watch'
-    : cmd === 'init' ? 'init'
-    : values.session ? 'session-detail'
-    : 'list';
+  const knownCommands = ['analyze', 'review', 'list', 'rules', 'watch', 'init'] as const;
+  if (cmd && !knownCommands.includes(cmd as any)) {
+    console.error(`Unknown command: ${cmd}\n`);
+    printHelp();
+    process.exit(1);
+  }
+  const command: ParsedCLI['command'] = (cmd as typeof knownCommands[number]) ?? (values.session ? 'session-detail' : 'list');
 
   return {
     command,
-    format: values.format === 'json' ? 'json' : undefined,
     options: {
       project: values.project as string | undefined,
       all: Boolean(values.all),
@@ -195,14 +173,6 @@ function parseCLIArgs(): ParsedCLI {
       list: Boolean(values.list),
       verbose: Boolean(values.verbose),
     },
-    suggestOptions: {
-      project: values.project as string | undefined,
-      all: Boolean(values.all),
-      verbose: Boolean(values.verbose),
-      full: Boolean(values.full),
-      limit: values.limit ? parseInt(values.limit as string, 10) : undefined,
-      model: values.model as string | undefined,
-    },
     applyOptions: {
       project: values.project as string | undefined,
       all: Boolean(values.all),
@@ -212,9 +182,6 @@ function parseCLIArgs(): ParsedCLI {
       minConfidence: values['min-confidence']
         ? parseFloat(values['min-confidence'] as string)
         : undefined,
-      limit: values.limit ? parseInt(values.limit as string, 10) : undefined,
-      full: Boolean(values.full),
-      model: values.model as string | undefined,
     },
     watchOptions: {
       project: values.project as string | undefined,
@@ -235,24 +202,13 @@ async function main(): Promise<void> {
 
   const cli = parseCLIArgs();
 
-  // Validate --format flag early (before command dispatch)
-  if (cli.format && cli.command !== 'run') {
-    printError('--format is only supported with the "run" command.');
-    process.exit(1);
-  }
-
   // Commands that don't need Claude projects discovery
   if (cli.command === 'rules') {
     await runRules(cli.rulesOptions);
     return;
   }
 
-  if (cli.command === 'suggest') {
-    await runSuggest(cli.suggestOptions);
-    return;
-  }
-
-  if (cli.command === 'apply') {
+  if (cli.command === 'review') {
     await runApply(cli.applyOptions);
     return;
   }
@@ -269,13 +225,9 @@ async function main(): Promise<void> {
 
   let projects = await discoverProjects();
   if (projects.length === 0) {
-    if (cli.format === 'json') {
-      console.log(JSON.stringify({ version: 1, error: 'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/' }));
-    } else {
-      printError(
-        'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/',
-      );
-    }
+    printError(
+      'No Claude Code projects found. Is Claude Code installed? Expected directory: ~/.claude/projects/',
+    );
     process.exit(1);
   }
 
@@ -286,21 +238,15 @@ async function main(): Promise<void> {
     const matchPath = projectRoot ?? cwd;
     projects = projects.filter((p) => p.projectPath === matchPath);
     if (projects.length === 0) {
-      if (cli.format === 'json') {
-        console.log(JSON.stringify({ version: 1, error: `No Claude sessions found for ${matchPath}. Use --all to scan all projects.` }));
-      } else {
-        printError(
-          `No Claude sessions found for ${matchPath}. Use --all to scan all projects.`,
-        );
-      }
+      printError(
+        `No Claude sessions found for ${matchPath}. Use --all to scan all projects.`,
+      );
       process.exit(1);
     }
   }
 
-  if (cli.command === 'run') {
-    await runRun(projects, cli.analyzeOptions, cli.suggestOptions, cli.applyOptions, cli.format);
-  } else if (cli.command === 'analyze') {
-    await runAnalyze(projects, cli.analyzeOptions);
+  if (cli.command === 'analyze') {
+    await runAnalyzePipeline(projects, cli.analyzeOptions);
   } else if (cli.command === 'session-detail') {
     await runSessionDetail(projects, cli.options);
   } else {
@@ -385,143 +331,6 @@ async function runRules(opts: RulesOptions): Promise<void> {
   }
 }
 
-// === Suggest command ===
-
-async function runSuggest(opts: SuggestOptions): Promise<void> {
-  const projectRoot = await resolveProject('Suggest', opts);
-
-  // Check Claude CLI
-  const cliAvailable = await checkCliAvailable();
-  if (!cliAvailable) {
-    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
-    process.exit(1);
-  }
-
-  if (opts.verbose) {
-    printVerbose(`Project root: ${projectRoot}`);
-  }
-
-  const storeDir = await initStoreDir(projectRoot);
-
-  // --full flag: run analyze first
-  if (opts.full) {
-    const projects = await discoverProjects();
-    let matchingProjects: ProjectInfo[];
-    if (opts.project) {
-      matchingProjects = filterByProject(projects, opts.project);
-    } else if (opts.all) {
-      matchingProjects = projects;
-    } else {
-      // CWD-aware: only analyze current project
-      matchingProjects = projects.filter((p) => p.projectPath === projectRoot);
-    }
-
-    if (matchingProjects.length > 0) {
-      await runAnalyze(matchingProjects, {
-        project: opts.project,
-        all: opts.all,
-        limit: opts.limit,
-        verbose: opts.verbose,
-        force: false,
-        noCross: false,
-        dryRun: false,
-        yes: true,
-        model: opts.model,
-      });
-    }
-  }
-
-  // Load insights + rules
-  let { insights, crossPatterns, rulesSnapshot, filteredOut } = await loadSuggestionInputs(storeDir, projectRoot);
-
-  // If called from the run pipeline with scoped IDs, filter to only those
-  if (opts.scopedInsightIds) {
-    const scopedSet = new Set(opts.scopedInsightIds);
-    insights = insights.filter((i) => scopedSet.has(i.id));
-    crossPatterns = crossPatterns.filter((p) => scopedSet.has(p.id));
-  }
-
-  printSuggestionLoadingSummary(
-    insights.length + crossPatterns.length,
-    insights.length,
-    crossPatterns.length,
-    rulesSnapshot.stats.totalRules,
-    rulesSnapshot.stats.totalFiles,
-    filteredOut,
-  );
-
-  if (insights.length === 0 && crossPatterns.length === 0) {
-    printWarning('No insights to process. Run "analyze" first.');
-    return;
-  }
-
-  // Check suggestion cache before calling the LLM
-  const promptVersion = await getPromptVersion('suggestion-generation');
-  const cacheKey = computeSuggestionCacheKey(
-    insights.map((i) => i.id),
-    crossPatterns.map((p) => p.id),
-    rulesSnapshot,
-    promptVersion,
-  );
-
-  const cachedSet = await findSuggestionSetByCacheKey(storeDir, cacheKey);
-  if (cachedSet) {
-    if (opts.verbose) {
-      printVerbose(`Suggestion cache hit (key: ${cacheKey}) — skipping LLM calls`);
-    }
-    printSuggestionGenerated(cachedSet.suggestions.length, cachedSet.stats.insightsSkipped, 0);
-    printSuggestionResults(cachedSet, []);
-    return;
-  }
-
-  // Generate suggestions via LLM
-  printSuggestionGenerating();
-
-  const result = await generateSuggestions(insights, crossPatterns, rulesSnapshot, opts.verbose, opts.model as ModelName | undefined);
-
-  // Dedup and rank
-  const ranked = dedupAndRank(result.suggestions);
-
-  printSuggestionGenerated(ranked.length, result.skipped.length, result.durationMs / 1000);
-
-  // Build stats
-  const stats = {
-    total: ranked.length,
-    byType: {
-      add: ranked.filter((s) => s.type === 'add').length,
-      update: ranked.filter((s) => s.type === 'update').length,
-      remove: ranked.filter((s) => s.type === 'remove').length,
-      consolidate: ranked.filter((s) => s.type === 'consolidate').length,
-      split: ranked.filter((s) => s.type === 'split').length,
-    },
-    byPriority: {
-      high: ranked.filter((s) => s.priority === 'high').length,
-      medium: ranked.filter((s) => s.priority === 'medium').length,
-      low: ranked.filter((s) => s.priority === 'low').length,
-    },
-    insightsUsed: insights.length + crossPatterns.length - result.skipped.length,
-    insightsSkipped: result.skipped.length,
-    estimatedRulesAfter: rulesSnapshot.stats.totalRules + ranked.filter((s) => s.type === 'add').length,
-  };
-
-  const suggestionSet = {
-    projectPath: projectRoot,
-    generatedAt: new Date().toISOString(),
-    suggestions: ranked,
-    stats,
-    cacheKey,
-  };
-
-  // Save to disk
-  const savedPath = await saveSuggestionSet(storeDir, suggestionSet);
-  if (opts.verbose) {
-    printVerbose(`Suggestions saved to ${savedPath}`);
-  }
-
-  // Print results
-  printSuggestionResults(suggestionSet, result.skipped);
-}
-
 function promptConfirmation(prompt: string): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -532,145 +341,120 @@ function promptConfirmation(prompt: string): Promise<boolean> {
   });
 }
 
-// === Run command (full pipeline) ===
+// === Session discovery helper ===
 
-async function runRun(
-  projects: ProjectInfo[],
-  analyzeOpts: AnalyzeOptions,
-  suggestOpts: SuggestOptions,
-  applyOpts: ApplyOptions,
-  format?: 'json',
-): Promise<void> {
-  // JSON output mode: resolve project root without banner
-  if (format === 'json') {
-    const startDir = suggestOpts.project ? resolve(suggestOpts.project) : process.cwd();
-    const projectRoot = await findProjectRoot(startDir);
+interface DiscoveryResult {
+  toAnalyze: SessionInfo[];
+  alreadyAnalyzed: number;
+  alreadyAnalyzedIds: string[];
+  skippedShort: number;
+  storeDir: string;
+}
 
-    if (!projectRoot) {
-      console.log(JSON.stringify({ version: 1, error: `Could not find project root from ${startDir}. No .git, package.json, or CLAUDE.md found.` }));
-      process.exit(1);
-    }
-    // Pre-check CLI availability before suppressing output
-    const cliAvailable = await checkCliAvailable();
-    if (!cliAvailable) {
-      console.log(JSON.stringify({ version: 1, error: 'Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code' }));
-      process.exit(1);
-    }
+/**
+ * Discover, parse, filter, and determine which sessions need analysis for a single project.
+ * Discover, parse, filter, and determine which sessions need analysis.
+ */
+async function discoverAnalyzableSessions(
+  project: ProjectInfo,
+  opts: AnalyzeOptions,
+): Promise<DiscoveryResult> {
+  const storeDir = await initStoreDir(project.projectPath);
+  let audit = await loadAuditLog(storeDir);
+  const promptVersion = await getPromptVersion('session-analysis');
+  const minMessages = opts.minMessages ?? 2;
 
-    const originalLog = console.log;
-    const originalError = console.error;
-    const originalWarn = console.warn;
-    console.log = () => {};
-    console.error = () => {};
-    console.warn = () => {};
+  // Verbose: show all sessions before filtering
+  if (opts.verbose) {
+    printSessionsDebugList(project.sessions, `All sessions for ${shortPath(project.projectPath)}`);
+  }
 
+  // Parse all sessions (with cache)
+  const parsed: SessionInfo[] = [];
+  for (const sessionFile of project.sessions) {
     try {
-      // Step 1: Analyze (force yes to skip confirmation prompts)
-      const analyzeOutput = await runAnalyze(projects, { ...analyzeOpts, yes: true });
-
-      // Step 2: Check for insights
-      const storeDir = await initStoreDir(projectRoot);
-      const { insights, crossPatterns } = await loadSuggestionInputs(storeDir, projectRoot);
-
-      if (insights.length === 0 && crossPatterns.length === 0) {
-        console.log = originalLog;
-        console.error = originalError;
-        console.warn = originalWarn;
-        console.log(JSON.stringify({
-          version: 1,
-          projectPath: projectRoot,
-          generatedAt: new Date().toISOString(),
-          analysis: { sessionsAnalyzed: 0, insightsFound: 0, crossPatternsFound: 0 },
-          suggestions: [],
-          stats: null,
-        }));
-        return;
+      const cached = await getCachedSession(storeDir, sessionFile.sessionId, sessionFile.filePath);
+      if (cached) {
+        parsed.push(cached);
+        continue;
       }
 
-      // Step 3: Suggest
-      const allScopedIds = [...analyzeOutput.insightIds, ...analyzeOutput.crossPatternIds];
-      const scopedInsightIds = allScopedIds.length > 0 ? allScopedIds : undefined;
-      await runSuggest({ ...suggestOpts, full: false, scopedInsightIds });
+      const info = await buildSessionInfo(
+        sessionFile,
+        project.projectPath,
+        project.projectPathEncoded,
+      );
+      parsed.push(info);
 
-      // Step 4: Load suggestions and emit JSON
-      const suggestionSet = await loadLatestSuggestionSet(storeDir);
-
-      console.log = originalLog;
-      console.error = originalError;
-      console.warn = originalWarn;
-
-      console.log(JSON.stringify({
-        version: 1,
-        projectPath: projectRoot,
-        generatedAt: new Date().toISOString(),
-        analysis: {
-          sessionsAnalyzed: analyzeOutput.insightIds.length,
-          insightsFound: analyzeOutput.insightIds.length,
-          crossPatternsFound: analyzeOutput.crossPatternIds.length,
-        },
-        suggestions: suggestionSet?.suggestions ?? [],
-        stats: suggestionSet?.stats ?? null,
-      }));
-    } catch (err) {
-      console.log = originalLog;
-      console.error = originalError;
-      console.warn = originalWarn;
-      const message = err instanceof Error ? err.message : String(err);
-      console.log(JSON.stringify({ version: 1, error: message }));
-      process.exit(1);
+      await cacheSession(storeDir, info);
+      const fileStat = await stat(sessionFile.filePath);
+      audit = markSessionParsed(audit, sessionFile.sessionId, fileStat.mtimeMs);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      printWarning(`Failed to parse session ${sessionFile.sessionId}: ${msg}`);
     }
-
-    return;
   }
 
-  // === Human-readable output (default) ===
+  // Save audit after parsing
+  await saveAuditLog(storeDir, audit);
 
-  const projectRoot = await resolveProject('Full Pipeline', suggestOpts);
-
-  // Step 1: Analyze
-  const analyzeOutput = await runAnalyze(projects, analyzeOpts);
-
-  // Check if there are insights to work with
-  const storeDir = await initStoreDir(projectRoot);
-  const { insights, crossPatterns } = await loadSuggestionInputs(storeDir, projectRoot);
-
-  if (insights.length === 0 && crossPatterns.length === 0) {
-    console.log();
-    console.log('No insights found \u2014 nothing to suggest.');
-    return;
+  // Verbose: show parsed sessions
+  if (opts.verbose) {
+    console.log(treeCont(tertiary(`Parsed sessions (${parsed.length}):`)));
+    for (const s of parsed) {
+      const shortId = s.sessionId.slice(0, 8);
+      const date = s.firstTimestamp
+        ? new Date(s.firstTimestamp).toISOString().slice(0, 16).replace('T', ' ')
+        : '?';
+      const msgs = `${s.userMessageCount} user / ${s.assistantMessageCount} asst`;
+      console.log(treeCont(tertiary(`  ${shortId} | ${date} | ${msgs} | ${shortPath(s.projectPath)}`)));
+    }
   }
 
-  // Step 2: Suggest (without --full since we already analyzed)
-  // If analyze produced new insights, scope suggest to only those.
-  // If nothing new (all already analyzed), process everything from disk.
-  const allScopedIds = [...analyzeOutput.insightIds, ...analyzeOutput.crossPatternIds];
-  const scopedInsightIds = allScopedIds.length > 0 ? allScopedIds : undefined;
-  await runSuggest({ ...suggestOpts, full: false, scopedInsightIds });
-
-  // Check if suggestions were generated
-  const suggestionSet = await loadLatestSuggestionSet(storeDir);
-  if (!suggestionSet || suggestionSet.suggestions.length === 0) {
-    console.log();
-    console.log('No suggestions generated \u2014 nothing to apply.');
-    return;
+  // Filter out short sessions
+  let skippedShort = 0;
+  const analyzable: SessionInfo[] = [];
+  for (const session of parsed) {
+    if (!isSessionAnalyzable(session, minMessages)) {
+      skippedShort++;
+      continue;
+    }
+    analyzable.push(session);
   }
 
-  // Step 3: Apply (without --full since we already suggested)
-  await runApply({ ...applyOpts, full: false });
+  if (skippedShort > 0) {
+    printSkippedSummary(skippedShort);
+  }
+
+  // Apply --limit
+  const limited = opts.limit ? analyzable.slice(0, opts.limit) : analyzable;
+  if (opts.limit && opts.verbose) {
+    console.log(treeCont(tertiary(`After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`)));
+  }
+
+  // Determine which need analysis
+  const toAnalyze: SessionInfo[] = [];
+  const alreadyAnalyzedIds: string[] = [];
+  for (const session of limited) {
+    const fileStat = await stat(session.filePath);
+    const needs = opts.force || needsAnalysis(audit, session.sessionId, promptVersion, fileStat.mtimeMs);
+    if (needs) {
+      toAnalyze.push(session);
+    } else {
+      alreadyAnalyzedIds.push(session.sessionId);
+    }
+  }
+
+  return { toAnalyze, alreadyAnalyzed: alreadyAnalyzedIds.length, alreadyAnalyzedIds, skippedShort, storeDir };
 }
 
-// === Analyze command ===
+// === Run command (full pipeline) ===
 
-interface AnalyzeOutput {
-  insightIds: string[];
-  crossPatternIds: string[];
-}
-
-async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promise<AnalyzeOutput> {
-  const analyzeProjectRoot = opts.project
-    ? await findProjectRoot(resolve(opts.project))
-    : projects[0]?.projectPath;
-  printAnalyzerHeader(analyzeProjectRoot ?? undefined);
+async function runAnalyzePipeline(
+  projects: ProjectInfo[],
+  analyzeOpts: AnalyzeOptions,
+): Promise<void> {
+  const projectRoot = await resolveProject('Analyze', analyzeOpts);
 
   // Check Claude CLI
   const cliAvailable = await checkCliAvailable();
@@ -680,216 +464,137 @@ async function runAnalyze(projects: ProjectInfo[], opts: AnalyzeOptions): Promis
   }
 
   // Filter projects
-  if (opts.project) {
-    projects = filterByProject(projects, opts.project);
-    if (projects.length === 0) {
-      printError(`Project not found: ${opts.project}`);
+  let filteredProjects = projects;
+  if (analyzeOpts.project) {
+    filteredProjects = filterByProject(projects, analyzeOpts.project);
+    if (filteredProjects.length === 0) {
+      printError(`Project not found: ${analyzeOpts.project}`);
       process.exit(1);
     }
   }
 
-  const promptVersion = await getPromptVersion('session-analysis');
-
-  const allInsightIds: string[] = [];
-  const allCrossPatternIds: string[] = [];
-
-  for (const project of projects) {
-    if (project.sessions.length === 0) continue;
-
-    // Init store directory per project (use project's actual path)
-    const storeDir = await initStoreDir(project.projectPath);
-    let audit = await loadAuditLog(storeDir);
-
-    // Verbose: show all sessions before filtering
-    if (opts.verbose) {
-      printSessionsDebugList(project.sessions, `All sessions for ${shortPath(project.projectPath)}`);
-    }
-
-    const minMessages = opts.minMessages ?? 2;
-
-    // Parse all sessions (with cache)
-    const parsed: SessionInfo[] = [];
-    for (const sessionFile of project.sessions) {
-      try {
-        const cached = await getCachedSession(storeDir, sessionFile.sessionId, sessionFile.filePath);
-        if (cached) {
-          parsed.push(cached);
-          continue;
-        }
-
-        const info = await buildSessionInfo(
-          sessionFile,
-          project.projectPath,
-          project.projectPathEncoded,
-        );
-        parsed.push(info);
-
-        // Cache and record in audit
-        await cacheSession(storeDir, info);
-        const fileStat = await stat(sessionFile.filePath);
-        audit = markSessionParsed(audit, sessionFile.sessionId, fileStat.mtimeMs);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        printWarning(`Failed to parse session ${sessionFile.sessionId}: ${msg}`);
-      }
-    }
-
-    // Verbose: show parsed sessions with message counts before filtering
-    if (opts.verbose) {
-      console.log(treeCont(tertiary(`Parsed sessions (${parsed.length}):`)));
-      for (const s of parsed) {
-        const shortId = s.sessionId.slice(0, 8);
-        const date = s.firstTimestamp
-          ? new Date(s.firstTimestamp).toISOString().slice(0, 16).replace('T', ' ')
-          : '?';
-        const msgs = `${s.userMessageCount} user / ${s.assistantMessageCount} asst`;
-        console.log(treeCont(tertiary(`  ${shortId} | ${date} | ${msgs} | ${shortPath(s.projectPath)}`)));
-      }
-    }
-
-    // Filter out short sessions first, then apply --limit
-    let skippedCount = 0;
-    const analyzable: SessionInfo[] = [];
-
-    for (const session of parsed) {
-      if (!isSessionAnalyzable(session, minMessages)) {
-        skippedCount++;
-        continue;
-      }
-      analyzable.push(session);
-    }
-
-    // Always show skipped summary (verbose already has full session list above)
-    if (skippedCount > 0) {
-      printSkippedSummary(skippedCount);
-    }
-
-    // Apply --limit after filtering: take N newest from analyzable sessions
-    const limited = opts.limit ? analyzable.slice(0, opts.limit) : analyzable;
-    if (opts.limit && opts.verbose) {
-      console.log(treeCont(tertiary(`After --limit ${opts.limit} (from ${analyzable.length} analyzable): ${limited.length} sessions`)));
-    }
-
-    // Determine which sessions need analysis
-    const toAnalyze: SessionInfo[] = [];
-    let alreadyAnalyzed = 0;
-
-    for (const session of limited) {
-      const fileStat = await stat(session.filePath);
-      const needs = opts.force || needsAnalysis(audit, session.sessionId, promptVersion, fileStat.mtimeMs);
-
-      if (needs) {
-        toAnalyze.push(session);
-      } else {
-        alreadyAnalyzed++;
-      }
-    }
-
-    if (toAnalyze.length === 0 && alreadyAnalyzed > 0) {
-      printNothingToAnalyze();
-      continue;
-    }
-
-    if (toAnalyze.length === 0) {
-      console.log(lastSub(secondary('No analyzable sessions found.')));
-      console.log();
-      continue;
-    }
-
-    printAnalysisSummaryLine(toAnalyze.length, alreadyAnalyzed, project.projectPath);
-
-    // Prompt for confirmation if many sessions and not auto-confirmed
-    if (toAnalyze.length > 10 && !opts.yes && !opts.limit) {
-      const estimatedSeconds = toAnalyze.reduce((sum, s) => {
-        return sum + 10 + Math.min(s.userMessageCount, 300) * 0.12;
-      }, 0) + Math.max(0, toAnalyze.length - 1);
-      const estimatedMinutes = Math.ceil(estimatedSeconds / 60);
-      const crossNote = !opts.noCross && toAnalyze.length >= 2
-        ? ' + 1 cross-session synthesis' : '';
-
-      const parts: string[] = [];
-      if (alreadyAnalyzed > 0) parts.push(`${alreadyAnalyzed} already done`);
-      if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
-      const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-
-      console.log(`Found ${toAnalyze.length} sessions to analyze${detail}.`);
-      console.log(`Estimated time: ~${estimatedMinutes} minutes`);
-      console.log(`Estimated cost: ~${toAnalyze.length} LLM calls (session analysis)${crossNote}`);
-      console.log();
-
-      const confirmed = await promptConfirmation('Continue? [y/N] ');
-      if (!confirmed) {
-        console.log('Aborted.');
-        process.exit(0);
-      }
-      console.log();
-    }
-
-    // Dry run mode
-    if (opts.dryRun) {
-      for (const session of toAnalyze) {
-        const reason = opts.force ? 'forced' : 'new/changed';
-        printDryRun(session.sessionId, session.userMessageCount, reason);
-      }
-      console.log();
-      continue;
-    }
-
-    // Single-session analysis
-    const results: AnalysisResult[] = [];
-    for (let i = 0; i < toAnalyze.length; i++) {
-      const session = toAnalyze[i];
-      printAnalysisProgress(session.sessionId, session.userMessageCount);
-
-      const result = await analyzeSingleSession(session, opts.verbose, opts.model as ModelName | undefined);
-      results.push(result);
-
-      // Save result and update audit
-      await saveAnalysisResult(storeDir, result);
-      audit = markSessionAnalyzed(audit, session.sessionId, promptVersion, result.insights.length);
-      await saveAuditLog(storeDir, audit);
-
-      const hasMoreWork = i < toAnalyze.length - 1 || (!opts.noCross && toAnalyze.length >= 2);
-      printAnalysisDone(result.insights.length, result.stats.analysisTimeMs / 1000, !hasMoreWork);
-
-      // Rate limiting: 1s delay between calls (except last)
-      if (i < toAnalyze.length - 1) {
-        await delay(1000);
-      }
-    }
-
-    // Cross-session synthesis
-    let crossPatterns: import('./analyzer/types.js').CrossSessionPattern[] = [];
-
-    if (!opts.noCross && results.length >= 2) {
-      const allInsights = results.flatMap((r) => r.insights);
-      if (allInsights.length > 0) {
-        const crossText = `Cross-session synthesis (${allInsights.length} insights from ${results.length} sessions)...`;
-        console.log(substep(crossText));
-
-        crossPatterns = await synthesizeCrossSessions(results, project.projectPath, opts.verbose, opts.model as ModelName | undefined);
-
-        if (crossPatterns.length > 0) {
-          await saveCrossSessionPatterns(storeDir, crossPatterns);
-          audit = markCrossSessionDone(audit);
-          await saveAuditLog(storeDir, audit);
-
-          console.log(
-            success(`${crossPatterns.length} cross-session pattern${crossPatterns.length === 1 ? '' : 's'} found`),
-          );
-        }
-      }
-    }
-
-    console.log();
-    printInsightResults(results, crossPatterns);
-
-    // Accumulate IDs for the caller (used by run pipeline to scope suggest)
-    allInsightIds.push(...results.flatMap((r) => r.insights.map((i) => i.id)));
-    allCrossPatternIds.push(...crossPatterns.map((p) => p.id));
+  const project = filteredProjects[0];
+  if (!project || project.sessions.length === 0) {
+    console.log('No sessions found.');
+    return;
   }
 
-  return { insightIds: allInsightIds, crossPatternIds: allCrossPatternIds };
+  console.log(step('Analyzing Sessions'));
+
+  const discovery = await discoverAnalyzableSessions(project, analyzeOpts);
+
+  // Load existing analysis results for already-analyzed sessions
+  const existingResults: AnalysisResult[] = [];
+  for (const sessionId of discovery.alreadyAnalyzedIds) {
+    const loaded = await loadAnalysisResult(discovery.storeDir, sessionId);
+    if (loaded && loaded.insights.length > 0) {
+      existingResults.push(loaded);
+    }
+  }
+
+  if (discovery.toAnalyze.length === 0 && existingResults.length === 0) {
+    if (discovery.alreadyAnalyzed > 0) {
+      printNothingToAnalyze();
+    } else {
+      console.log(lastSub(secondary('No analyzable sessions found.')));
+      console.log();
+    }
+    return;
+  }
+
+  printAnalysisSummaryLine(discovery.toAnalyze.length, discovery.alreadyAnalyzed, project.projectPath);
+
+  // Prompt for confirmation if many sessions and not auto-confirmed
+  if (discovery.toAnalyze.length > 10 && !analyzeOpts.yes && !analyzeOpts.limit) {
+    const estimatedSeconds = discovery.toAnalyze.reduce((sum, s) => {
+      return sum + 10 + Math.min(s.userMessageCount, 300) * 0.12;
+    }, 0) + Math.max(0, discovery.toAnalyze.length - 1);
+    const estimatedMinutes = Math.ceil(estimatedSeconds / 60);
+    const crossNote = !analyzeOpts.noCross && discovery.toAnalyze.length >= 2
+      ? ' + 1 cross-session synthesis' : '';
+
+    const parts: string[] = [];
+    if (discovery.alreadyAnalyzed > 0) parts.push(`${discovery.alreadyAnalyzed} already done`);
+    if (discovery.skippedShort > 0) parts.push(`${discovery.skippedShort} skipped`);
+    const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+
+    console.log(`Found ${discovery.toAnalyze.length} sessions to analyze${detail}.`);
+    console.log(`Estimated time: ~${estimatedMinutes} minutes`);
+    console.log(`Estimated cost: ~${discovery.toAnalyze.length} LLM calls (session analysis)${crossNote}`);
+    console.log();
+
+    const confirmed = await promptConfirmation('Continue? [y/N] ');
+    if (!confirmed) {
+      console.log('Aborted.');
+      process.exit(0);
+    }
+    console.log();
+  }
+
+  // Dry run mode
+  if (analyzeOpts.dryRun) {
+    for (const session of discovery.toAnalyze) {
+      const reason = analyzeOpts.force ? 'forced' : 'new/changed';
+      printDryRun(session.sessionId, session.userMessageCount, reason);
+    }
+    console.log();
+    return;
+  }
+
+  const rulesSnapshot = await buildRulesSnapshot(projectRoot);
+
+  // Run per-session pipeline
+  const result = await runPerSessionPipeline(
+    discovery.toAnalyze,
+    discovery.storeDir,
+    projectRoot,
+    rulesSnapshot,
+    {
+      verbose: analyzeOpts.verbose ?? false,
+      model: analyzeOpts.model as ModelName | undefined,
+      noCross: analyzeOpts.noCross ?? false,
+      dryRun: false,
+      force: analyzeOpts.force ?? false,
+      minMessages: analyzeOpts.minMessages ?? 2,
+      yes: analyzeOpts.yes ?? false,
+    },
+    {
+      onSessionAnalyzing: (sessionId, userMessageCount) => {
+        printAnalysisProgress(sessionId, userMessageCount);
+      },
+      onSessionAnalyzed: (_sessionId, insightsFound, analysisTimeMs) => {
+        printAnalysisDone(insightsFound, analysisTimeMs / 1000, false);
+      },
+      onSessionComplete: (r: SessionPipelineResult) => {
+        if (r.suggestions.length > 0) {
+          console.log(substep(secondary(`${r.suggestions.length} suggestion${r.suggestions.length === 1 ? '' : 's'} generated`)));
+        }
+      },
+      onCrossSessionComplete: (patterns, suggestions) => {
+        if (patterns.length > 0) {
+          console.log(
+            success(`${patterns.length} cross-session pattern${patterns.length === 1 ? '' : 's'} found`),
+          );
+        }
+        if (suggestions.length > 0) {
+          console.log(substep(secondary(`${suggestions.length} cross-session suggestion${suggestions.length === 1 ? '' : 's'}`)));
+        }
+      },
+    },
+    existingResults,
+  );
+
+  console.log();
+
+  if (result.allSuggestions.length === 0) {
+    console.log('No suggestions generated.');
+    return;
+  }
+
+  const n = result.stats.suggestionsGenerated;
+  console.log(step(`${n} suggestion${n === 1 ? '' : 's'} ready`));
+  console.log(lastSub(`Run ${brand.emerald('contextlinter review')} to apply`));
+  console.log();
 }
 
 // === Session detail command ===
@@ -963,11 +668,13 @@ async function runList(projects: ProjectInfo[], opts: CLIOptions): Promise<void>
           project.projectPath,
           project.projectPathEncoded,
         );
-        sessionInfos.push(info);
-
-        if (opts.verbose && info.messages.length === 0) {
-          printVerbose(`Session ${info.sessionId}: no messages parsed`);
+        if (!info.firstTimestamp) {
+          if (opts.verbose) {
+            printVerbose(`Session ${info.sessionId}: no messages parsed`);
+          }
+          continue;
         }
+        sessionInfos.push(info);
       } catch (err: unknown) {
         const msg =
           err instanceof Error ? err.message : String(err);
@@ -993,17 +700,10 @@ async function runList(projects: ProjectInfo[], opts: CLIOptions): Promise<void>
   printSummary(projectsWithSessions, totalSessions, totalDurationMinutes);
 }
 
-// === Apply command ===
+// === Review command ===
 
 async function runApply(opts: ApplyOptions): Promise<void> {
-  const projectRoot = await resolveProject('Apply', opts);
-
-  // Check Claude CLI (needed for --full pipeline)
-  const cliAvailable = await checkCliAvailable();
-  if (!cliAvailable) {
-    printError('Claude Code CLI not found. Install it: https://docs.anthropic.com/en/docs/claude-code');
-    process.exit(1);
-  }
+  const projectRoot = await resolveProject('Review', opts);
 
   if (opts.verbose) {
     printVerbose(`Project root: ${projectRoot}`);
@@ -1011,29 +711,10 @@ async function runApply(opts: ApplyOptions): Promise<void> {
 
   const storeDir = await initStoreDir(projectRoot);
 
-  // Run full pipeline if --full or if no suggestions exist yet
-  const existingSuggestions = await loadLatestSuggestionSet(storeDir);
-  if (opts.full || !existingSuggestions) {
-    if (!existingSuggestions && !opts.full) {
-      console.log(secondary('No existing suggestions found. Running full pipeline...'));
-      console.log();
-    }
-
-    // Run suggest with --full (which also runs analyze)
-    await runSuggest({
-      project: opts.project,
-      all: opts.all,
-      verbose: opts.verbose,
-      full: true,
-      limit: opts.limit,
-      model: opts.model,
-    });
-  }
-
-  // Load the latest suggestions
+  // Load saved suggestions
   const suggestionSet = await loadLatestSuggestionSet(storeDir);
   if (!suggestionSet || suggestionSet.suggestions.length === 0) {
-    console.log('Your rules are up to date! Nothing to change.');
+    console.log(`No suggestions found. Run ${brand.emerald('contextlinter analyze')} first.`);
     console.log();
     return;
   }
@@ -1041,10 +722,17 @@ async function runApply(opts: ApplyOptions): Promise<void> {
   // Filter to pending suggestions only
   const pending = suggestionSet.suggestions.filter((s) => s.status === 'pending');
   if (pending.length === 0) {
-    console.log('All suggestions have already been processed. Run "suggest" to generate new ones.');
+    console.log(`All suggestions have been reviewed. Run ${brand.emerald('contextlinter analyze')} to generate new ones.`);
     console.log();
     return;
   }
+
+  // Show summary
+  const stats = suggestionSet.stats;
+  console.log(step(`${pending.length} suggestion${pending.length === 1 ? '' : 's'} to review`));
+  console.log(treeCont(`Priority: ${stats.byPriority.high} high, ${stats.byPriority.medium} medium, ${stats.byPriority.low} low`));
+  console.log(lastSub(`Types: ${stats.byType.add} add, ${stats.byType.update} update, ${stats.byType.remove} remove`));
+  console.log();
 
   // Run interactive review
   await runInteractiveReview(pending, projectRoot, storeDir, opts);
@@ -1078,7 +766,7 @@ async function runInit(opts: ApplyOptions): Promise<void> {
 
   console.log(step('Initialize Slash Command'));
   console.log(success(`Created ${commandPath}`, false));
-  console.log(lastSub(secondary('You can now use /contextlinter in Claude Code to run the analysis pipeline.')));
+  console.log(lastSub(secondary('Run "npx contextlinter analyze" in your terminal first, then use /contextlinter in Claude Code to review and apply suggestions.')));
   console.log();
 }
 
@@ -1095,43 +783,65 @@ async function hasRulesFiles(projectRoot: string): Promise<boolean> {
 }
 
 function generateSlashCommandTemplate(): string {
-  return `Run the ContextLinter analysis pipeline and interactively apply suggestions to this project's rules files.
+  return `Review and apply ContextLinter suggestions to this project's rules files.
+
+## Prerequisites
+
+Run the analysis pipeline in your terminal first:
+\`\`\`
+npx contextlinter analyze
+\`\`\`
 
 ## Steps
 
-1. Run the ContextLinter CLI:
+1. Check if suggestions exist:
    \`\`\`bash
-   npx contextlinter run --format json
+   ls -t .contextlinter/suggestions/*.json 2>/dev/null | head -1
    \`\`\`
 
-2. Parse the JSON output. If the output contains an \`error\` field, show it to the user and stop.
+   If no files found, tell the user:
+   > No suggestions found. Run this in your terminal first:
+   > \`\`\`
+   > npx contextlinter analyze
+   > \`\`\`
+   > This analyzes your Claude Code sessions and generates rule suggestions.
+   > It takes a few minutes (one LLM call per session).
+   Then STOP.
 
-3. If \`suggestions\` array is empty, tell the user their rules are up to date.
+2. Read and parse the latest suggestion file (cat the file from step 1).
+   Extract the \`suggestions\` array, \`generatedAt\`, and \`stats\`.
 
-4. For each suggestion, present it to the user showing:
-   - The suggestion type (\`type\`: add/update/remove/consolidate/split)
-   - Target file (\`targetFile\`) and section (\`targetSection\`)
-   - The diff (\`diff.addedLines\` and \`diff.removedLines\`)
-   - Confidence level (\`confidence\`) and priority (\`priority\`)
+3. Show diagnostic summary:
+   > **ContextLinter suggestions** (generated {relative time from generatedAt})
+   > {stats.total} suggestions: {stats.byPriority.high} high, {stats.byPriority.medium} medium, {stats.byPriority.low} low priority
+   > Types: {stats.byType.add} add, {stats.byType.update} update, {stats.byType.remove} remove
+
+   If generatedAt is older than 7 days, warn:
+   > These suggestions are from {date}. Consider running \`npx contextlinter analyze\` again for fresh analysis.
+
+4. Filter to suggestions with \`status === "pending"\` only.
+   If none remain, tell user: "All suggestions have been reviewed. Run \`npx contextlinter analyze\` again to generate new ones." Then STOP.
+
+5. For each pending suggestion, present it showing:
+   - [index/total] title
+   - Type (ADD/UPDATE/REMOVE), target file (\`targetFile\`) + section (\`targetSection\`)
+   - Priority + confidence
+   - Diff: \`diff.addedLines\` as \`+ line\`, \`diff.removedLines\` as \`- line\`
    - Rationale (\`rationale\`)
 
-5. For each suggestion, ask the user:
+6. For each suggestion, ask the user:
    - **Accept** — apply this change to the target file
    - **Reject** — skip this suggestion
    - **Edit** — modify the suggested text before applying
 
-6. Apply accepted changes to the appropriate rules files:
-   - For "add" suggestions: create the file if needed, or append to the target section
-   - For "update" suggestions: find and replace the old text with new text
-   - For "remove" suggestions: find and delete the specified text
+7. Apply accepted changes to the appropriate rules files:
+   - For "add" suggestions: append to the target section (or end of file). Create file if needed.
+   - For "update" suggestions: find the removedLines text and replace with addedLines
+   - For "remove" suggestions: find and delete the removedLines text
    - Create parent directories as needed
 
-7. Show a summary of what was changed and remind the user to review with \`git diff\`.
+8. Show a summary of what was changed and remind the user to review with \`git diff\`.
 `;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 main().catch((err: unknown) => {

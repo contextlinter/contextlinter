@@ -72,6 +72,7 @@ export async function generateSuggestions(
       rules_content: rulesContent,
       rules_stats: rulesStats,
       insights_json: JSON.stringify(batch, null, 2),
+      existing_suggestions_summary: '',
     });
 
     const result = await callClaude(prompt, model, isBatched ? SUGGEST_TIMEOUT_MS : undefined);
@@ -114,7 +115,7 @@ export async function generateSuggestions(
 /**
  * Format all rules files content for the prompt.
  */
-function formatRulesForPrompt(snapshot: RulesSnapshot): string {
+export function formatRulesForPrompt(snapshot: RulesSnapshot): string {
   if (snapshot.files.length === 0) {
     return '(No rules files exist yet. CLAUDE.md has not been created.)';
   }
@@ -130,7 +131,7 @@ function formatRulesForPrompt(snapshot: RulesSnapshot): string {
  * Build the insights payload for the prompt, combining insights and cross-session patterns.
  * Cross-session patterns are marked as such so the LLM can prioritize them.
  */
-function buildInsightsPayload(
+export function buildInsightsPayload(
   insights: Insight[],
   crossPatterns: CrossSessionPattern[],
 ): Array<Record<string, unknown>> {
@@ -175,7 +176,7 @@ function buildInsightsPayload(
 /**
  * Build a map from insight ID to session IDs for traceability.
  */
-function buildInsightSessionMap(
+export function buildInsightSessionMap(
   insights: Insight[],
   crossPatterns: CrossSessionPattern[],
 ): Map<string, string[]> {
@@ -196,7 +197,7 @@ function buildInsightSessionMap(
 /**
  * Build a Suggestion from the raw LLM output.
  */
-function buildSuggestion(
+export function buildSuggestion(
   raw: LlmSuggestion,
   rulesSnapshot: RulesSnapshot,
   insightSessionMap: Map<string, string[]>,
@@ -347,7 +348,7 @@ function normalizeSplitTarget(value: string | string[] | null): string | null {
  * Build rules stats string for the prompt so the LLM can make informed split decisions.
  * Shows total rules per file and per-section breakdowns.
  */
-function buildRulesStatsForPrompt(snapshot: RulesSnapshot): string {
+export function buildRulesStatsForPrompt(snapshot: RulesSnapshot): string {
   if (snapshot.files.length === 0) {
     return '(No rules files exist yet.)';
   }
@@ -381,6 +382,92 @@ function buildRulesStatsForPrompt(snapshot: RulesSnapshot): string {
   }
 
   return parts.join('\n');
+}
+
+/**
+ * Generate suggestions for a small set of insights from a single session.
+ * Passes existing suggestions as context so the LLM can avoid duplicates.
+ * No batching — designed for 1-10 insights per call.
+ */
+export async function generateSessionSuggestions(
+  insights: Insight[],
+  rulesSnapshot: RulesSnapshot,
+  existingSuggestions: Suggestion[],
+  verbose: boolean,
+  model?: ModelName,
+): Promise<GenerateResult> {
+  if (insights.length === 0) {
+    return { suggestions: [], skipped: [], durationMs: 0, batchCount: 0 };
+  }
+
+  const rulesContent = formatRulesForPrompt(rulesSnapshot);
+  const rulesStats = buildRulesStatsForPrompt(rulesSnapshot);
+  const template = await loadPromptTemplate('suggestion-generation');
+  const insightSessionMap = buildInsightSessionMap(insights, []);
+
+  const insightsForPrompt = buildInsightsPayload(insights, [])
+    .sort((a, b) => (b.confidence as number) - (a.confidence as number));
+
+  // Build existing suggestions summary for the prompt
+  const existingSummary = formatExistingSuggestions(existingSuggestions);
+
+  if (verbose) {
+    printVerbose(`Generating suggestions for ${insights.length} insight(s)${existingSuggestions.length > 0 ? ` (${existingSuggestions.length} existing for dedup context)` : ''}...`);
+  }
+
+  const prompt = fillTemplate(template, {
+    rules_content: rulesContent,
+    rules_stats: rulesStats,
+    insights_json: JSON.stringify(insightsForPrompt, null, 2),
+    existing_suggestions_summary: existingSummary,
+  });
+
+  const result = await callClaude(prompt, model, SUGGEST_TIMEOUT_MS);
+
+  if (verbose) {
+    printVerbose(`Claude responded in ${(result.durationMs / 1000).toFixed(1)}s`);
+  }
+
+  const rawSuggestions = validateSuggestionsArray(result.parsed);
+  const suggestions: Suggestion[] = [];
+  const skipped: Array<{ title: string; reason: string }> = [];
+
+  for (const raw of rawSuggestions) {
+    if (raw.skipped) {
+      skipped.push({
+        title: raw.title ?? 'Unknown',
+        reason: raw.skipReason ?? 'already covered',
+      });
+    } else {
+      const suggestion = buildSuggestion(raw, rulesSnapshot, insightSessionMap);
+      if (suggestion) {
+        suggestions.push(suggestion);
+      }
+    }
+  }
+
+  return { suggestions, skipped, durationMs: result.durationMs, batchCount: 1 };
+}
+
+/**
+ * Build a compact summary of existing suggestions for the prompt.
+ * Returns empty string if no existing suggestions, or a full section with header.
+ */
+function formatExistingSuggestions(suggestions: Suggestion[]): string {
+  if (suggestions.length === 0) return '';
+
+  const summary = suggestions.map((s) => ({
+    title: s.title,
+    type: s.type,
+    targetFile: s.targetFile,
+    targetSection: s.targetSection,
+  }));
+
+  return `## Already generated suggestions (from earlier sessions in this run)
+
+<existing_suggestions>
+${JSON.stringify(summary, null, 2)}
+</existing_suggestions>`;
 }
 
 /**

@@ -12,14 +12,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `pnpm lint` — type-check only (`tsc --noEmit`)
 - `pnpm check` — lint + tests together
 - Run a single test file: `pnpm vitest run src/analyzer/__tests__/llm-client.test.ts`
+- **Self-analysis**: `npx tsx contextlinter/src/index.ts run --format json` — analyze this project's own Claude Code sessions. Output is NDJSON (one JSON object per line with `type` field: start/session/synthesis/summary). Parse line-by-line and present suggestions interactively.
 
 ## Architecture
 
-ContextLinter is a CLI tool that analyzes Claude Code sessions (JSONL transcripts in `~/.claude/projects/`) to extract patterns and generate CLAUDE.md rule suggestions. It runs a three-stage pipeline:
+ContextLinter is a CLI tool that analyzes Claude Code sessions (JSONL transcripts in `~/.claude/projects/`) to extract patterns and generate CLAUDE.md rule suggestions. The `run` command uses a per-session pipeline:
 
 ```
-analyze → suggest → apply
+for each session:  analyze → suggest  (up to 3 sessions analyzed in parallel)
+then:              cross-session synthesis → apply
 ```
+
+Analysis runs up to 3 sessions concurrently. As results arrive, suggestions are generated sequentially with incremental dedup. Cross-session synthesis runs once at the end. `--format json` outputs NDJSON (one JSON object per line, version 2).
 
 ### Pipeline Stages (each maps to a CLI command and a `src/` module)
 
@@ -27,8 +31,9 @@ analyze → suggest → apply
 2. **analyzer** — sends session transcripts to Claude CLI (`claude -p`) to extract structured `Insight` objects, then synthesizes cross-session `CrossSessionPattern`s
 3. **rules-reader** — discovers and parses existing CLAUDE.md / `.claude/rules/*.md` files into a `RulesSnapshot`
 4. **suggester** — combines insights + rules snapshot, calls Claude CLI to generate `Suggestion` objects (add/update/remove/consolidate/split), deduplicates and ranks them
-5. **applier** — interactive review UI, atomic file writes (temp file + rename), backup creation, audit logging to `.contextlinter/history.jsonl`
-6. **watcher** (`src/watcher.ts`) — polls for new sessions and runs analyze/suggest automatically
+5. **pipeline** — per-session orchestrator (`runPerSessionPipeline`): parallel analysis → sequential suggest with dedup accumulator → cross-session synthesis. Emits callbacks for progress/NDJSON streaming.
+6. **applier** — interactive review UI, atomic file writes (temp file + rename), backup creation, audit logging to `.contextlinter/history.jsonl`
+7. **watcher** (`src/watcher.ts`) — polls for new sessions and runs analyze/suggest automatically
 
 ### Other Key Modules
 
@@ -55,3 +60,9 @@ GitHub Actions runs tests on **Node 20 & 22** (`pnpm install --frozen-lockfile`,
 - **No eslint/prettier** — only `tsc` for linting
 - **Minimal dependencies** — only chalk and uuid at runtime
 - **CLI entry point** is `src/index.ts` — parses args with Node's built-in `parseArgs`, dispatches to command handlers
+
+## Usage Requirements
+
+- **ContextLinter must be run from within a workspace or project directory** that contains CLAUDE.md files (either in the root or in subdirectories)
+- The tool analyzes Claude Code sessions in the context of the current workspace's rules
+- For multi-repo workspaces with multiple CLAUDE.md files, the discovery mechanism follows the hierarchy defined in `src/rules-reader/discovery.ts` (global → project root → local → modular → subdirectory)

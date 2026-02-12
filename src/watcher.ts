@@ -336,7 +336,7 @@ export async function processCandidate(
     }
   }
 
-  console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review.`));
+  console.log(lastSub(`Run ${color.bold('contextlinter review')} to apply.`));
   console.log();
 }
 
@@ -476,6 +476,7 @@ export function isContextlinterSession(session: SessionInfo): boolean {
       const text = msg.textContent.toLowerCase();
       if ((text.includes('contextlinter') || text.includes('clinter')) && (
         text.includes('analyze') ||
+        text.includes('review') ||
         text.includes('suggest') ||
         text.includes('apply') ||
         text.includes('watch') ||
@@ -513,7 +514,7 @@ export function printExitSummary(stats: WatchStats): void {
 
   if (stats.suggestionsGenerated > 0) {
     console.log(substep(`Suggestions generated: ${stats.suggestionsGenerated}`));
-    console.log(lastSub(`Run ${color.bold('contextlinter apply')} to review pending suggestions.`));
+    console.log(lastSub(`Run ${color.bold('contextlinter review')} to apply pending suggestions.`));
   } else {
     console.log(lastSub(`Suggestions generated: ${stats.suggestionsGenerated}`));
   }

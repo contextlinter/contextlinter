@@ -68,7 +68,6 @@ function defaultOptions(overrides: Partial<ApplyOptions> = {}): ApplyOptions {
     verbose: false,
     yes: false,
     dryRun: false,
-    full: false,
     ...overrides,
   };
 }

@@ -125,7 +125,6 @@ export async function runInteractiveReview(
     sigintReceived = true;
     ctx.aborted = true;
     console.log();
-    console.log(warn('Interrupted. Saving accepted changes...'));
     rl.close();
   };
   process.on('SIGINT', sigintHandler);
@@ -474,6 +473,13 @@ function printSummary(ctx: InteractiveContext): void {
   const rejected = ctx.results.filter((r) => r.action === 'reject').length;
   const skipped = ctx.results.filter((r) => r.action === 'skip').length;
 
+  // Interrupted with nothing accepted — keep it short
+  if (ctx.aborted && accepted === 0) {
+    console.log(warn('Review interrupted. No changes were made.'));
+    console.log();
+    return;
+  }
+
   console.log();
   console.log(step('Summary'));
   console.log(substep(`Accepted: ${color.bold(String(accepted))}`));
@@ -511,12 +517,11 @@ function printSummary(ctx: InteractiveContext): void {
 
   if (accepted > 0) {
     console.log(substep(secondary('History saved to .contextlinter/history.jsonl')));
-    console.log(lastSub(secondary('Review changes with: git diff')));
-  }
-
-  if (ctx.aborted) {
-    console.log();
-    console.log(warn('Review was interrupted. Accepted changes were saved.'));
+    if (ctx.aborted) {
+      console.log(lastSub(warn('Review interrupted. Accepted changes were saved.')));
+    } else {
+      console.log(lastSub(secondary('Review changes with: git diff')));
+    }
   }
 
   console.log();

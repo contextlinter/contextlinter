@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.5] - 2026-02-12
+
+### Added
+- Per-session pipeline with parallel analysis (up to 3 sessions concurrently) and combined analyze+suggest LLM calls
+
+### Changed
+- Updated CLAUDE.md with ui module documentation, prompt template syntax, and CI info
+
+### Removed
+- `clinter` bin alias
+
 ## [0.2.4] - 2026-02-12
 
 ### Added

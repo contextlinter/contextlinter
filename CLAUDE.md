@@ -33,13 +33,18 @@ analyze → suggest → apply
 ### Other Key Modules
 
 - **store/** — persistence layer for caching parsed sessions, analysis results, suggestions, and audit log. All state lives in `.contextlinter/` (gitignored). Uses atomic writes.
+- **ui/** — terminal theming (`theme.ts` for chalk colors/icons) and text formatting (`format.ts`, `banner.ts`)
 - **utils/logger.ts** — chalk-based terminal output (headers, tables, progress, errors)
 - **utils/paths.ts** — path resolution for Claude projects dir and session files
-- **prompts/** — markdown templates sent to Claude CLI for analysis, cross-session synthesis, and suggestion generation
+- **prompts/** — markdown templates with `{{variable}}` placeholders (filled by `llm-client.fillTemplate()`), sent to Claude CLI for analysis, cross-session synthesis, and suggestion generation
 
 ### LLM Integration
 
 All LLM calls go through `analyzer/llm-client.ts` which spawns `claude -p` as a subprocess with stdin/stdout piping. The working directory is set to a sandboxed temp dir. Model is configurable via `--model` flag or environment. Timeouts: 120s for analysis, 300s for suggestions.
+
+## CI
+
+GitHub Actions runs tests on **Node 20 & 22** (`pnpm install --frozen-lockfile`, type-check, coverage). Publishing uses Node 24.
 
 ## Conventions
 

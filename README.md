@@ -102,6 +102,7 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 | `--model <model>` | LLM model: `sonnet` (default), `opus`, `haiku` |
 | `--min-confidence N` | Auto-accept only above this confidence (0.0-1.0) |
 | `--yes` | Auto-confirm all prompts |
+| `--format json` | Output as JSON (for machine/Claude Code consumption) |
 | `--dry-run` | Preview what would happen without writing files |
 | `--verbose` | Show detailed progress and debug info |
 | `--force` | Re-analyze sessions even if already processed |

@@ -1,4 +1,4 @@
-import type { Suggestion, SuggestionPriority } from './types.js';
+import type { Suggestion, SuggestionDiff, SuggestionPriority } from './types.js';
 
 const PRIORITY_ORDER: Record<SuggestionPriority, number> = {
   high: 0,
@@ -69,6 +69,10 @@ function isSimilar(a: Suggestion, b: Suggestion): boolean {
   // Very similar titles regardless of target
   if (titleOverlap(a.title, b.title) > 0.8) return true;
 
+  // Cross-file content similarity — catches duplicates where rule text
+  // is similar even if titles and target files differ
+  if (contentOverlap(a, b) > 0.6) return true;
+
   return false;
 }
 
@@ -105,4 +109,57 @@ function shouldReplace(existing: Suggestion, candidate: Suggestion): boolean {
   if (candidatePriority < existingPriority) return true;
   if (candidatePriority > existingPriority) return false;
   return candidate.confidence > existing.confidence;
+}
+
+/**
+ * Compare the added content of two suggestions using word-level Jaccard similarity.
+ * Returns 0 if either suggestion has no added content.
+ */
+function contentOverlap(a: Suggestion, b: Suggestion): number {
+  const textA = extractAddedText(a.diff);
+  const textB = extractAddedText(b.diff);
+  if (!textA || !textB) return 0;
+
+  const wordsA = new Set(normalizeContentWords(textA));
+  const wordsB = new Set(normalizeContentWords(textB));
+
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const word of wordsA) {
+    if (wordsB.has(word)) intersection++;
+  }
+
+  const union = new Set([...wordsA, ...wordsB]).size;
+  return intersection / union;
+}
+
+/**
+ * Extract the added text from a SuggestionDiff.
+ * Handles both flat diffs and multi-part (consolidate) diffs.
+ */
+function extractAddedText(diff: SuggestionDiff): string | null {
+  if (diff.addedLines && diff.addedLines.length > 0) {
+    return diff.addedLines.map((l) => l.content).join('\n');
+  }
+  if (diff.parts) {
+    const addParts = diff.parts
+      .filter((p) => p.addedLines && p.addedLines.length > 0)
+      .map((p) => p.addedLines!.map((l) => l.content).join('\n'));
+    return addParts.length > 0 ? addParts.join('\n') : null;
+  }
+  return null;
+}
+
+/**
+ * Normalize content text to word tokens for comparison.
+ * Preserves Polish/accented characters for accurate similarity.
+ */
+function normalizeContentWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/^#{1,6}\s+/gm, '') // strip markdown headings
+    .replace(/[^a-z0-9\s\u00C0-\u024F]/g, '') // keep letters (incl accented), digits, spaces
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
 }

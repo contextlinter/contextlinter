@@ -21,7 +21,7 @@ For each cross-session pattern found, provide:
 - **title**: one-line summary
 - **description**: what pattern you see and across how many sessions
 - **occurrences**: array of {sessionId, insightId} pairs that form this pattern
-- **suggestedRule**: what rule would fix this permanently (in English)
+- **suggestedRule**: what rule would fix this permanently (in English, 1-2 sentences max)
 - **actionHint**: "add_to_rules", "update_rules", "add_to_global_rules", or "unclear"
 
 ## Important notes

@@ -60,6 +60,7 @@ GitHub Actions runs tests on **Node 20 & 22** (`pnpm install --frozen-lockfile`,
 - **No eslint/prettier** — only `tsc` for linting
 - **Minimal dependencies** — only chalk and uuid at runtime
 - **CLI entry point** is `src/index.ts` — parses args with Node's built-in `parseArgs`, dispatches to command handlers
+- **README.md must stay in sync** — when adding/removing/changing commands, flags, pipeline behavior, or architecture, update `README.md` as part of the same change. Treat it like tests: the task isn't done until the README reflects reality
 
 ## Usage Requirements
 

@@ -18,12 +18,10 @@ ContextLinter reads your Claude Code session history, finds patterns in how you 
 
 ```bash
 cd your-project
-npx contextlinter run
+npx contextlinter analyze
 ```
 
 No config files, no API keys. It uses your existing Claude Code CLI to call the LLM.
-
-> **Short alias:** `clinter` works as a shorthand everywhere — `npx clinter run` is equivalent to `npx contextlinter run`.
 
 ## What it actually does
 
@@ -35,7 +33,7 @@ Every time you correct Claude Code — "no, use pnpm not npm", "we don't put tes
 4. **Synthesizes** cross-session patterns (things you correct in multiple sessions)
 5. **Presents** an interactive review where you accept, reject, or edit each change
 
-The `run` command processes sessions one at a time through analyze → suggest, streaming results incrementally. You can also run `analyze`, `suggest`, and `apply` separately if you want more control.
+The `analyze` command processes sessions in parallel (up to 3 at a time), generates suggestions with incremental dedup, and runs cross-session synthesis at the end. Then use `review` to interactively accept, reject, or edit each suggestion.
 
 ## What kinds of insights does it find?
 
@@ -53,26 +51,39 @@ Each insight includes evidence (quoted messages), a confidence score, and a sugg
 ## Example output
 
 ```
-==> ContextLinter Analyzer v0.1.0
+  contextlinter v0.2.5
+  Analyze · /Users/you/work/my-app
 
-Analyzing project: /Users/you/work/my-app
-Sessions to analyze: 4 (6 already analyzed, skipped)
+▸ Analyzing Sessions
+  4 to analyze, 6 already done
 
-    Analyzing session a1b2c3d4e5f6 (12 user messages)...
-  ✓ 3 insights found (8.2s)
-    Analyzing session f6e5d4c3b2a1 (8 user messages)...
-  ✓ 2 insights found (5.1s)
+    Analyzing session a1b2c3d (12 user msgs)...
+  ✓ 3 insights (8.2s)
+    2 suggestions generated
+    Analyzing session f6e5d4c (8 user msgs)...
+  ✓ 2 insights (5.1s)
+    1 suggestion generated
+  ✓ 1 cross-session pattern found
 
-==> Suggestion 1/3                              HIGH  92%
+  3 suggestions ready
+  └ Run contextlinter review to apply
+```
 
-    Add rule to CLAUDE.md § "Testing"
+Then run `contextlinter review`:
+
+```
+▸ 3 suggestions to review
+  ├ Priority: 1 high, 1 medium, 1 low
+  └ Types: 2 add, 1 update
+
+[1/3]  Add rule to CLAUDE.md § "Testing"         HIGH  92%
 
     + - Always use vitest, never jest
     + - Run `pnpm test` before committing
 
     Rationale: User corrected test runner choice in 3 separate sessions
 
-[a]ccept  [r]eject  [e]dit  [s]kip  [q]uit all
+[a]ccept  [r]eject  [e]dit  [s]kip  [q]uit
 >
 ```
 
@@ -80,10 +91,10 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 
 | Command | Description |
 |---|---|
-| `run` | Full pipeline: analyze → suggest → apply |
-| `analyze` | Analyze sessions and extract insights |
-| `suggest` | Generate rule suggestions from insights |
-| `apply` | Review and apply suggestions interactively |
+| `analyze` | Analyze sessions and generate rule suggestions |
+| `review` | Review and apply suggestions interactively |
+| `list` | Show analyzed sessions for the current project |
+| `watch` | Monitor for new sessions and auto-analyze |
 | `rules` | Show current rules files and statistics |
 | `init` | Create a `/contextlinter` slash command for Claude Code |
 
@@ -94,13 +105,23 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 | `--limit N` | Analyze only the N newest sessions |
 | `--min-messages N` | Skip sessions shorter than N user messages (default: 2) |
 | `--model <model>` | LLM model: `sonnet` (default), `opus`, `haiku` |
-| `--min-confidence N` | Auto-accept only above this confidence (0.0-1.0) |
+| `--min-confidence N` | Only apply suggestions above this confidence (0.0-1.0) |
+| `--project <path>` | Target a specific project directory |
+| `--all` | Analyze all projects (default: current directory only) |
+| `--session <id>` | Show details for a specific session |
 | `--yes` | Auto-confirm all prompts |
-| `--format json` | Output as NDJSON stream (one JSON object per line, for machine/Claude Code consumption) |
 | `--dry-run` | Preview what would happen without writing files |
 | `--verbose` | Show detailed progress and debug info |
 | `--force` | Re-analyze sessions even if already processed |
 | `--no-cross` | Skip cross-session pattern synthesis |
+
+**Watch options:**
+
+| Flag | Description |
+|---|---|
+| `--interval N` | Poll interval in seconds (default: 300) |
+| `--cooldown N` | Wait before analyzing a new session (default: 60) |
+| `--no-suggest` | Only analyze, don't generate suggestions |
 
 ## Requirements
 
@@ -110,7 +131,7 @@ Sessions to analyze: 4 (6 already analyzed, skipped)
 
 ## How suggestions get applied
 
-ContextLinter never writes to your files without asking. The `apply` step shows each suggestion as a diff and waits for your input:
+ContextLinter never writes to your files without asking. The `review` command shows each suggestion as a diff and waits for your input:
 
 - **accept** — write the change to disk
 - **reject** — skip permanently
@@ -139,7 +160,9 @@ src/
 ├── suggester/        LLM-based suggestion generation from insights + rules
 ├── pipeline/         Per-session orchestrator with parallel analysis
 ├── applier/          Interactive review and file writer
+├── watcher.ts        Poll for new sessions and auto-analyze
 ├── store/            Persistence (insights, suggestions, cache, audit log)
+├── ui/               Terminal theming, formatting, banners
 └── utils/            Logger, paths, helpers
 ```
 

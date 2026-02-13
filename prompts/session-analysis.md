@@ -40,7 +40,7 @@ For each insight found, provide:
 - **title**: one-line summary
 - **description**: what happened and why it matters
 - **evidence**: 1-3 short quotes from the conversation (max 200 chars each) with the role (user/assistant) and approximate position
-- **suggestedRule**: if this insight could be fixed by adding a rule, what would that rule say? (null if not applicable)
+- **suggestedRule**: if this insight could be fixed by adding a rule, what would that rule say? 1-2 sentences max — a concise, actionable instruction, not an explanation. (null if not applicable)
 - **actionHint**: what should be done — "add_to_rules", "update_rules", "add_to_global_rules", "prompt_improvement", or "unclear"
 
 ## Deduplication

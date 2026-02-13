@@ -80,13 +80,24 @@ For each insight from Part 1, decide what change to make to the rules files:
 3. **Consider splitting large files.** If a single rules file has more than 80 rules (check the statistics above), suggest "split" to move the largest sections into `.claude/rules/<section-name>.md` files.
 
 Rules for generating good content:
-- Keep rules concise — one clear instruction per rule, max 2-3 lines
 - Use the same style as existing rules (if bullets, use bullets; if prose, use prose)
 - Don't repeat information that's already in the rules
 - Group related rules under the same section header
 - If CLAUDE.md is already long (>200 rules), prefer adding to .claude/rules/ instead
 - Write rules in the same language as the existing CLAUDE.md (if Polish, write in Polish; if English, English)
 - Ensure code examples in suggested rules are consistent with the rule text
+- Do not duplicate rules across files. Pick the single most appropriate file for each rule.
+
+## CRITICAL: Content brevity
+
+Each rule in "content.add" MUST be 1-3 lines max. This is a hard limit.
+
+- One rule = one clear instruction. One sentence is ideal.
+- NEVER generate sub-bullets, sub-sections, or headers within a rule.
+- If the insight has many examples, distill into one sentence with 2-3 inline examples max.
+- If you cannot express it in 3 lines, split into separate suggestions (one rule each).
+- BAD: 10-line block with "### Heading", sub-bullets, and a list of banned words
+- GOOD: `Write as a practitioner ("I built"), not an observer. No promotional language, no emojis.`
 
 ## Important notes
 

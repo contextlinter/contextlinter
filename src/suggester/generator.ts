@@ -210,6 +210,20 @@ export function buildSuggestion(
   const diff = buildDiff(raw, rulesSnapshot, targetFile, targetSection);
   if (!diff) return null;
 
+  // Warn if content is verbose (safety net for prompt non-compliance)
+  const MAX_CONTENT_LINES = 5;
+  if (type !== 'split' && type !== 'consolidate') {
+    const rawAdd = typeof raw.content.add === 'string' ? raw.content.add
+      : Array.isArray(raw.content.add) ? raw.content.add.join('\n')
+      : null;
+    if (rawAdd) {
+      const nonEmptyLines = rawAdd.split('\n').filter((l) => l.trim().length > 0).length;
+      if (nonEmptyLines > MAX_CONTENT_LINES) {
+        printWarning(`Suggestion "${raw.title}" has ${nonEmptyLines} content lines (max ${MAX_CONTENT_LINES}). Consider making it more concise.`);
+      }
+    }
+  }
+
   // For split type, content.add holds the destination file path
   const splitTarget = type === 'split' ? normalizeSplitTarget(raw.content.add) : null;
 

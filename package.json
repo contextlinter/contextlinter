@@ -1,6 +1,6 @@
 {
   "name": "contextlinter",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A linter for AI coding context — analyzes sessions and suggests improvements to rules files",
   "type": "module",
   "license": "MIT",

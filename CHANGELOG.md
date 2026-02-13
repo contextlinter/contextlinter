@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.6] - 2026-02-13
+
+### Added
+- Content-based deduplication using word-level Jaccard similarity to catch duplicate suggestions across different target files
+- Content brevity enforcement in prompts — each suggested rule is now limited to 1-3 lines
+- Verbose content warning when generated suggestions exceed 5 lines
+
+### Changed
+- Updated suggestion generation prompts to include cross-file dedup guidance and stricter brevity constraints
+
 ## [0.2.5] - 2026-02-12
 
 ### Added
